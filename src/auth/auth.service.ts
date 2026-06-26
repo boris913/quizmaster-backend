@@ -3,12 +3,12 @@ import {
   ConflictException,
   UnauthorizedException,
   Inject,
-} from '@nestjs/common';
-import { JwtService } from '@nestjs/jwt';
-import { SupabaseClient } from '@supabase/supabase-js';
-import * as bcrypt from 'bcryptjs';
-import { SUPABASE_CLIENT } from '../database/database.module';
-import { RegisterDto, LoginDto } from './dto/auth.dto';
+} from "@nestjs/common";
+import { JwtService } from "@nestjs/jwt";
+import { SupabaseClient } from "@supabase/supabase-js";
+import * as bcrypt from "bcryptjs";
+import { SUPABASE_CLIENT } from "../database/database.module";
+import { RegisterDto, LoginDto } from "./dto/auth.dto";
 
 @Injectable()
 export class AuthService {
@@ -20,13 +20,13 @@ export class AuthService {
   async register(dto: RegisterDto) {
     // Vérifie si le pseudo est déjà pris
     const { data: existing } = await this.supabase
-      .from('users')
-      .select('id')
-      .eq('pseudo', dto.pseudo)
+      .from("users")
+      .select("id")
+      .eq("pseudo", dto.pseudo)
       .single();
 
     if (existing) {
-      throw new ConflictException('Ce pseudo est déjà utilisé');
+      throw new ConflictException("Ce pseudo est déjà utilisé");
     }
 
     // Hash du mot de passe
@@ -34,9 +34,9 @@ export class AuthService {
 
     // Création de l'utilisateur
     const { data: user, error } = await this.supabase
-      .from('users')
+      .from("users")
       .insert({ pseudo: dto.pseudo, password_hash: passwordHash })
-      .select('id, pseudo, created_at')
+      .select("id, pseudo, created_at")
       .single();
 
     if (error) {
@@ -54,13 +54,13 @@ export class AuthService {
   async login(dto: LoginDto) {
     // Recherche de l'utilisateur
     const { data: user, error } = await this.supabase
-      .from('users')
-      .select('id, pseudo, password_hash, created_at')
-      .eq('pseudo', dto.pseudo)
+      .from("users")
+      .select("id, pseudo, password_hash, created_at")
+      .eq("pseudo", dto.pseudo)
       .single();
 
     if (error || !user) {
-      throw new UnauthorizedException('Pseudo ou mot de passe incorrect');
+      throw new UnauthorizedException("Pseudo ou mot de passe incorrect");
     }
 
     // Vérification du mot de passe
@@ -70,7 +70,7 @@ export class AuthService {
     );
 
     if (!isPasswordValid) {
-      throw new UnauthorizedException('Pseudo ou mot de passe incorrect');
+      throw new UnauthorizedException("Pseudo ou mot de passe incorrect");
     }
 
     const token = this.generateToken(user.id, user.pseudo);
@@ -83,13 +83,13 @@ export class AuthService {
 
   async getProfile(userId: string) {
     const { data: user, error } = await this.supabase
-      .from('users')
-      .select('id, pseudo, created_at')
-      .eq('id', userId)
+      .from("users")
+      .select("id, pseudo, created_at")
+      .eq("id", userId)
       .single();
 
     if (error || !user) {
-      throw new UnauthorizedException('Utilisateur introuvable');
+      throw new UnauthorizedException("Utilisateur introuvable");
     }
 
     return user;

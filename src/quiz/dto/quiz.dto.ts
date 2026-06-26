@@ -12,12 +12,12 @@ import {
   Min,
   Max,
   ArrayMinSize,
-} from 'class-validator';
-import { Type } from 'class-transformer';
+} from "class-validator";
+import { Type } from "class-transformer";
 
 export class QuizOptionDto {
   @IsString()
-  @IsIn(['A', 'B', 'C', 'D'])
+  @IsIn(["A", "B", "C", "D"])
   id: string;
 
   @IsString()
@@ -32,8 +32,8 @@ export class CreateQuestionDto {
   @MaxLength(1000)
   text: string;
 
-  @IsEnum(['single', 'multiple'])
-  type: 'single' | 'multiple';
+  @IsEnum(["single", "multiple"])
+  type: "single" | "multiple";
 
   @IsArray()
   @ValidateNested({ each: true })
@@ -60,7 +60,7 @@ export class CreateQuestionDto {
 
 export class CreateQuizDto {
   @IsString()
-  @MinLength(3, { message: 'Le titre doit faire au moins 3 caractères' })
+  @MinLength(3, { message: "Le titre doit faire au moins 3 caractères" })
   @MaxLength(200)
   title: string;
 

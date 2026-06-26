@@ -1,12 +1,11 @@
-import { Injectable, Inject, BadRequestException } from '@nestjs/common';
-import { SupabaseClient } from '@supabase/supabase-js';
-import { SUPABASE_CLIENT } from '../database/database.module';
+import { Injectable, Inject, BadRequestException } from "@nestjs/common";
+import { SupabaseClient } from "@supabase/supabase-js";
+import { SUPABASE_CLIENT } from "../database/database.module";
 import {
   calculatePoints,
   checkAnswer,
   buildLeaderboard,
-} from '../common/utils/scoring.util';
-import { Question } from '../common/types';
+} from "../common/utils/scoring.util";
 
 export interface SubmitAnswerParams {
   participantId: string;
@@ -21,6 +20,11 @@ export interface AnswerResult {
   pointsEarned: number;
   timeTakenMs: number;
   correctAnswers: string[];
+  totalScore: number;
+  rank: number;
+  gapToNext: number | null;
+  gapToPodium: number | null;
+  onPodium: boolean;
 }
 
 @Injectable()
@@ -29,31 +33,33 @@ export class ParticipantService {
 
   /**
    * Enregistre la réponse d'un participant et calcule les points.
+   * AMÉLIORATION AUDIT #7: Tolérance réseau de 2 secondes
    */
   async submitAnswer(params: SubmitAnswerParams): Promise<AnswerResult> {
-    const { participantId, sessionId, questionId, answers, timeTakenMs } = params;
+    const { participantId, sessionId, questionId, answers, timeTakenMs } =
+      params;
 
     // Vérifier que le participant n'a pas déjà répondu à cette question
     const { data: existing } = await this.supabase
-      .from('participant_answers')
-      .select('id')
-      .eq('participant_id', participantId)
-      .eq('question_id', questionId)
+      .from("participant_answers")
+      .select("id")
+      .eq("participant_id", participantId)
+      .eq("question_id", questionId)
       .single();
 
     if (existing) {
-      throw new BadRequestException('Vous avez déjà répondu à cette question');
+      throw new BadRequestException("Vous avez déjà répondu à cette question");
     }
 
     // Récupérer la question
     const { data: question, error: qError } = await this.supabase
-      .from('questions')
-      .select('*')
-      .eq('id', questionId)
+      .from("questions")
+      .select("*")
+      .eq("id", questionId)
       .single();
 
     if (qError || !question) {
-      throw new BadRequestException('Question introuvable');
+      throw new BadRequestException("Question introuvable");
     }
 
     // Vérifier si la réponse est correcte
@@ -63,26 +69,44 @@ export class ParticipantService {
       question.type,
     );
 
-    // Calculer les points
+    // AMÉLIORATION AUDIT #7: Calculer le vrai temps côté serveur avec tolérance
+    const { data: session } = await this.supabase
+      .from("sessions")
+      .select("question_start_time")
+      .eq("id", sessionId)
+      .single();
+
+    const serverTimeTaken =
+      Date.now() -
+      new Date(session?.question_start_time || Date.now()).getTime();
+    const timerMs = question.timer_seconds * 1000;
+
+    // Tolérance de 2 secondes pour le réseau
+    const validTimeTaken = Math.min(
+      Math.max(timeTakenMs, serverTimeTaken - 2000),
+      timerMs,
+    );
+
+    // Calculer les points avec le temps validé
     const pointsEarned = calculatePoints(
       isCorrect,
-      timeTakenMs,
+      validTimeTaken,
       question.timer_seconds,
       question.max_points,
     );
 
     // Insérer la réponse dans la base
     const { error: answerError } = await this.supabase
-      .from('participant_answers')
+      .from("participant_answers")
       .insert({
         participant_id: participantId,
         session_id: sessionId,
         question_id: questionId,
         answers,
-        time_taken_ms: timeTakenMs,
+        time_taken_ms: validTimeTaken,
         points_earned: pointsEarned,
         is_correct: isCorrect,
-        status: 'answered',
+        status: "answered",
       });
 
     if (answerError) {
@@ -92,11 +116,25 @@ export class ParticipantService {
     // Mettre à jour le score du participant
     await this.incrementParticipantScore(participantId, pointsEarned);
 
+    // AMÉLIORATION AUDIT #3: Calculer le classement avec gaps
+    const leaderboard = await this.buildSessionLeaderboard(
+      sessionId,
+      questionId,
+    );
+    const participantEntry = leaderboard.find(
+      (e) => e.participant_id === participantId,
+    );
+
     return {
       isCorrect,
       pointsEarned,
-      timeTakenMs,
+      timeTakenMs: validTimeTaken,
       correctAnswers: question.correct_answers,
+      totalScore: participantEntry?.score ?? 0,
+      rank: participantEntry?.rank ?? 0,
+      gapToNext: participantEntry?.gap_to_next ?? null,
+      gapToPodium: participantEntry?.gap_to_podium ?? null,
+      onPodium: participantEntry?.on_podium ?? false,
     };
   }
 
@@ -106,19 +144,19 @@ export class ParticipantService {
   async processTimeouts(sessionId: string, questionId: string): Promise<void> {
     // Récupérer tous les participants actifs de la session
     const { data: participants } = await this.supabase
-      .from('participants')
-      .select('id')
-      .eq('session_id', sessionId)
-      .neq('status', 'disconnected');
+      .from("participants")
+      .select("id")
+      .eq("session_id", sessionId)
+      .neq("status", "disconnected");
 
     if (!participants) return;
 
     // Récupérer ceux qui ont répondu
     const { data: answered } = await this.supabase
-      .from('participant_answers')
-      .select('participant_id')
-      .eq('session_id', sessionId)
-      .eq('question_id', questionId);
+      .from("participant_answers")
+      .select("participant_id")
+      .eq("session_id", sessionId)
+      .eq("question_id", questionId);
 
     const answeredIds = new Set(answered?.map((a) => a.participant_id) || []);
     const timedOutParticipants = participants.filter(
@@ -136,40 +174,38 @@ export class ParticipantService {
       time_taken_ms: null,
       points_earned: 0,
       is_correct: false,
-      status: 'timeout',
+      status: "timeout",
     }));
 
-    await this.supabase.from('participant_answers').insert(timeoutRecords);
+    await this.supabase.from("participant_answers").insert(timeoutRecords);
 
-    // Remettre les participants en état "answered" (même timeout = répondu dans le sens "question traitée")
+    // Remettre les participants en état "waiting"
     const timedOutIds = timedOutParticipants.map((p) => p.id);
     await this.supabase
-      .from('participants')
-      .update({ status: 'waiting' })
-      .in('id', timedOutIds);
+      .from("participants")
+      .update({ status: "waiting" })
+      .in("id", timedOutIds);
   }
 
   /**
    * Construit le classement complet d'une session après une question.
+   * AMÉLIORATION AUDIT #3: Avec gaps et podium
    */
-  async buildSessionLeaderboard(
-    sessionId: string,
-    questionId: string,
-  ) {
+  async buildSessionLeaderboard(sessionId: string, questionId: string) {
     const { data: participants } = await this.supabase
-      .from('participants')
-      .select('id, pseudo, score')
-      .eq('session_id', sessionId)
-      .neq('status', 'disconnected')
-      .order('score', { ascending: false });
+      .from("participants")
+      .select("id, pseudo, score")
+      .eq("session_id", sessionId)
+      .neq("status", "disconnected")
+      .order("score", { ascending: false });
 
     if (!participants) return [];
 
     // Récupérer les réponses à cette question spécifique
     const { data: questionAnswers } = await this.supabase
-      .from('participant_answers')
-      .select('participant_id, points_earned, is_correct')
-      .eq('question_id', questionId);
+      .from("participant_answers")
+      .select("participant_id, points_earned, is_correct")
+      .eq("question_id", questionId);
 
     const answerMap = new Map(
       questionAnswers?.map((a) => [
@@ -194,18 +230,18 @@ export class ParticipantService {
    */
   async getParticipantSummary(participantId: string, sessionId: string) {
     const { data: participant } = await this.supabase
-      .from('participants')
-      .select('id, pseudo, score, status')
-      .eq('id', participantId)
-      .eq('session_id', sessionId)
+      .from("participants")
+      .select("id, pseudo, score, status")
+      .eq("id", participantId)
+      .eq("session_id", sessionId)
       .single();
 
     if (!participant) return null;
 
     const { data: answers } = await this.supabase
-      .from('participant_answers')
-      .select('is_correct, points_earned, time_taken_ms, status')
-      .eq('participant_id', participantId);
+      .from("participant_answers")
+      .select("is_correct, points_earned, time_taken_ms, status")
+      .eq("participant_id", participantId);
 
     const correctCount = answers?.filter((a) => a.is_correct).length || 0;
     const totalAnswers = answers?.length || 0;
@@ -214,7 +250,8 @@ export class ParticipantService {
       ...participant,
       correct_count: correctCount,
       total_answers: totalAnswers,
-      accuracy: totalAnswers > 0 ? Math.round((correctCount / totalAnswers) * 100) : 0,
+      accuracy:
+        totalAnswers > 0 ? Math.round((correctCount / totalAnswers) * 100) : 0,
     };
   }
 
@@ -225,19 +262,19 @@ export class ParticipantService {
     if (points === 0) return;
 
     const { data: participant } = await this.supabase
-      .from('participants')
-      .select('score')
-      .eq('id', participantId)
+      .from("participants")
+      .select("score")
+      .eq("id", participantId)
       .single();
 
     if (!participant) return;
 
     await this.supabase
-      .from('participants')
+      .from("participants")
       .update({
         score: participant.score + points,
-        status: 'answered',
+        status: "answered",
       })
-      .eq('id', participantId);
+      .eq("id", participantId);
   }
 }

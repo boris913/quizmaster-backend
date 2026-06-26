@@ -4,15 +4,15 @@ import {
   NotFoundException,
   ForbiddenException,
   BadRequestException,
-} from '@nestjs/common';
-import { SupabaseClient } from '@supabase/supabase-js';
-import { SUPABASE_CLIENT } from '../database/database.module';
+} from "@nestjs/common";
+import { SupabaseClient } from "@supabase/supabase-js";
+import { SUPABASE_CLIENT } from "../database/database.module";
 import {
   CreateQuizDto,
   UpdateQuizDto,
   CreateQuestionDto,
   ImportQuestionsDto,
-} from './dto/quiz.dto';
+} from "./dto/quiz.dto";
 
 @Injectable()
 export class QuizService {
@@ -26,7 +26,7 @@ export class QuizService {
     const { questions, ...quizData } = dto;
 
     const { data: quiz, error } = await this.supabase
-      .from('quizzes')
+      .from("quizzes")
       .insert({ ...quizData, creator_id: creatorId })
       .select()
       .single();
@@ -43,29 +43,31 @@ export class QuizService {
 
   async getQuizById(quizId: string, requesterId?: string) {
     const { data: quiz, error } = await this.supabase
-      .from('quizzes')
-      .select('*')
-      .eq('id', quizId)
+      .from("quizzes")
+      .select("*")
+      .eq("id", quizId)
       .single();
 
-    if (error || !quiz) throw new NotFoundException('Quiz introuvable');
+    if (error || !quiz) throw new NotFoundException("Quiz introuvable");
 
     // Récupérer les questions
     const { data: questions } = await this.supabase
-      .from('questions')
-      .select('*')
-      .eq('quiz_id', quizId)
-      .order('order_index', { ascending: true });
+      .from("questions")
+      .select("*")
+      .eq("quiz_id", quizId)
+      .order("order_index", { ascending: true });
 
     return { ...quiz, questions: questions || [] };
   }
 
   async getMyQuizzes(creatorId: string) {
     const { data, error } = await this.supabase
-      .from('quizzes')
-      .select('id, title, description, total_questions, created_at, updated_at, global_timer_seconds, use_global_timer')
-      .eq('creator_id', creatorId)
-      .order('created_at', { ascending: false });
+      .from("quizzes")
+      .select(
+        "id, title, description, total_questions, created_at, updated_at, global_timer_seconds, use_global_timer",
+      )
+      .eq("creator_id", creatorId)
+      .order("created_at", { ascending: false });
 
     if (error) throw new Error(`Erreur récupération quiz: ${error.message}`);
     return data || [];
@@ -75,9 +77,9 @@ export class QuizService {
     await this.assertOwnership(quizId, creatorId);
 
     const { data, error } = await this.supabase
-      .from('quizzes')
+      .from("quizzes")
       .update(dto)
-      .eq('id', quizId)
+      .eq("id", quizId)
       .select()
       .single();
 
@@ -89,12 +91,12 @@ export class QuizService {
     await this.assertOwnership(quizId, creatorId);
 
     const { error } = await this.supabase
-      .from('quizzes')
+      .from("quizzes")
       .delete()
-      .eq('id', quizId);
+      .eq("id", quizId);
 
     if (error) throw new Error(`Erreur suppression: ${error.message}`);
-    return { message: 'Quiz supprimé avec succès' };
+    return { message: "Quiz supprimé avec succès" };
   }
 
   // ============================================================
@@ -110,13 +112,14 @@ export class QuizService {
 
     // Récupérer l'index courant pour continuer la numérotation
     const { data: existing } = await this.supabase
-      .from('questions')
-      .select('order_index')
-      .eq('quiz_id', quizId)
-      .order('order_index', { ascending: false })
+      .from("questions")
+      .select("order_index")
+      .eq("quiz_id", quizId)
+      .order("order_index", { ascending: false })
       .limit(1);
 
-    const startIndex = existing && existing.length > 0 ? existing[0].order_index + 1 : 0;
+    const startIndex =
+      existing && existing.length > 0 ? existing[0].order_index + 1 : 0;
 
     // Valider les bonnes réponses par rapport aux options
     for (const q of questions) {
@@ -142,7 +145,7 @@ export class QuizService {
     }));
 
     const { data, error } = await this.supabase
-      .from('questions')
+      .from("questions")
       .insert(questionsToInsert)
       .select();
 
@@ -154,13 +157,13 @@ export class QuizService {
     await this.assertOwnership(quizId, creatorId);
 
     const { error } = await this.supabase
-      .from('questions')
+      .from("questions")
       .delete()
-      .eq('id', questionId)
-      .eq('quiz_id', quizId);
+      .eq("id", questionId)
+      .eq("quiz_id", quizId);
 
     if (error) throw new Error(`Erreur suppression question: ${error.message}`);
-    return { message: 'Question supprimée' };
+    return { message: "Question supprimée" };
   }
 
   async reorderQuestions(
@@ -177,13 +180,13 @@ export class QuizService {
 
     for (const update of updates) {
       await this.supabase
-        .from('questions')
+        .from("questions")
         .update({ order_index: update.order_index })
-        .eq('id', update.id)
-        .eq('quiz_id', quizId);
+        .eq("id", update.id)
+        .eq("quiz_id", quizId);
     }
 
-    return { message: 'Questions réordonnées' };
+    return { message: "Questions réordonnées" };
   }
 
   // ============================================================
@@ -203,7 +206,7 @@ export class QuizService {
     );
 
     if (questions.length === 0) {
-      throw new BadRequestException('Aucune question trouvée dans le fichier');
+      throw new BadRequestException("Aucune question trouvée dans le fichier");
     }
 
     return this.addQuestions(quizId, creatorId, questions);
@@ -225,7 +228,7 @@ export class QuizService {
     questionsContent: string,
     answersContent?: string,
   ): CreateQuestionDto[] {
-    const lines = questionsContent.split('\n').map((l) => l.trim());
+    const lines = questionsContent.split("\n").map((l) => l.trim());
     const questions: CreateQuestionDto[] = [];
 
     let currentQuestion: Partial<CreateQuestionDto> | null = null;
@@ -236,7 +239,7 @@ export class QuizService {
       if (currentQuestion && currentOptions.length >= 2) {
         questions.push({
           text: currentQuestion.text!,
-          type: currentCorrect.length > 1 ? 'multiple' : 'single',
+          type: currentCorrect.length > 1 ? "multiple" : "single",
           options: currentOptions,
           correct_answers: currentCorrect,
           max_points: currentQuestion.max_points || 100,
@@ -246,7 +249,7 @@ export class QuizService {
     };
 
     for (const line of lines) {
-      if (!line || line.startsWith('Quiz:')) continue;
+      if (!line || line.startsWith("Quiz:")) continue;
 
       // Détection d'une nouvelle question: "Question N [timer:X] [points:Y]"
       const questionMatch = line.match(
@@ -264,11 +267,7 @@ export class QuizService {
       }
 
       // Ligne de texte de question (après l'entête "Question N")
-      if (
-        currentQuestion &&
-        !currentQuestion.text &&
-        !line.match(/^[A-D]\)/)
-      ) {
+      if (currentQuestion && !currentQuestion.text && !line.match(/^[A-D]\)/)) {
         currentQuestion.text = line;
         continue;
       }
@@ -277,10 +276,10 @@ export class QuizService {
       const optionMatch = line.match(/^([A-D])\)\s+(.+?)(?:\s+\[correct\])?$/);
       if (optionMatch && currentQuestion) {
         const optId = optionMatch[1];
-        const optText = optionMatch[2].replace(/\s*\[correct\]\s*$/, '');
+        const optText = optionMatch[2].replace(/\s*\[correct\]\s*$/, "");
         currentOptions.push({ id: optId, text: optText });
 
-        if (line.includes('[correct]')) {
+        if (line.includes("[correct]")) {
           currentCorrect.push(optId);
         }
       }
@@ -313,12 +312,15 @@ export class QuizService {
 
     sections.forEach((section, index) => {
       if (index >= questions.length) return;
-      const lines = section.split('\n').map((l) => l.trim()).filter(Boolean);
+      const lines = section
+        .split("\n")
+        .map((l) => l.trim())
+        .filter(Boolean);
       if (lines.length < 2) return;
 
-      const answers = lines[1].split(',').map((a) => a.trim().toUpperCase());
+      const answers = lines[1].split(",").map((a) => a.trim().toUpperCase());
       questions[index].correct_answers = answers;
-      questions[index].type = answers.length > 1 ? 'multiple' : 'single';
+      questions[index].type = answers.length > 1 ? "multiple" : "single";
     });
   }
 
@@ -328,12 +330,12 @@ export class QuizService {
 
   private async assertOwnership(quizId: string, creatorId: string) {
     const { data: quiz } = await this.supabase
-      .from('quizzes')
-      .select('creator_id')
-      .eq('id', quizId)
+      .from("quizzes")
+      .select("creator_id")
+      .eq("id", quizId)
       .single();
 
-    if (!quiz) throw new NotFoundException('Quiz introuvable');
+    if (!quiz) throw new NotFoundException("Quiz introuvable");
     if (quiz.creator_id !== creatorId) {
       throw new ForbiddenException("Vous n'êtes pas le créateur de ce quiz");
     }

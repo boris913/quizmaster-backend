@@ -6,17 +6,17 @@ import {
   Body,
   Param,
   UseGuards,
-} from '@nestjs/common';
-import { SessionService } from './session.service';
-import { CreateSessionDto, JoinSessionDto } from './dto/session.dto';
-import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
+} from "@nestjs/common";
+import { SessionService } from "./session.service";
+import { CreateSessionDto, JoinSessionDto } from "./dto/session.dto";
+import { JwtAuthGuard } from "../common/guards/jwt-auth.guard";
 import {
   CurrentUser,
   JwtPayload,
-} from '../common/decorators/current-user.decorator';
-import { Public } from '../common/decorators/public.decorator';
+} from "../common/decorators/current-user.decorator";
+import { Public } from "../common/decorators/public.decorator";
 
-@Controller('sessions')
+@Controller("sessions")
 @UseGuards(JwtAuthGuard)
 export class SessionController {
   constructor(private readonly sessionService: SessionService) {}
@@ -34,8 +34,8 @@ export class SessionController {
    * GET /api/sessions/:id
    * Détail d'une session (créateur seulement)
    */
-  @Get(':id')
-  getSession(@Param('id') id: string, @CurrentUser() user: JwtPayload) {
+  @Get(":id")
+  getSession(@Param("id") id: string, @CurrentUser() user: JwtPayload) {
     return this.sessionService.getSessionByCreator(id, user.sub);
   }
 
@@ -43,8 +43,8 @@ export class SessionController {
    * GET /api/sessions/:id/participants
    * Liste des participants d'une session
    */
-  @Get(':id/participants')
-  getParticipants(@Param('id') id: string) {
+  @Get(":id/participants")
+  getParticipants(@Param("id") id: string) {
     return this.sessionService.getSessionParticipants(id);
   }
 
@@ -52,8 +52,8 @@ export class SessionController {
    * GET /api/sessions/:id/leaderboard
    * Classement d'une session
    */
-  @Get(':id/leaderboard')
-  getLeaderboard(@Param('id') id: string) {
+  @Get(":id/leaderboard")
+  getLeaderboard(@Param("id") id: string) {
     return this.sessionService.getSessionLeaderboard(id);
   }
 
@@ -61,9 +61,22 @@ export class SessionController {
    * GET /api/sessions/:id/results
    * Résultats finaux d'une session
    */
-  @Get(':id/results')
-  getResults(@Param('id') id: string) {
+  @Get(":id/results")
+  getResults(@Param("id") id: string) {
     return this.sessionService.getSessionResults(id);
+  }
+
+  /**
+   * AMÉLIORATION AUDIT #6: Reconnexion d'un participant
+   * GET /api/sessions/:id/reconnect/:participantId
+   */
+  @Public()
+  @Get(":id/reconnect/:participantId")
+  async reconnect(
+    @Param("id") sessionId: string,
+    @Param("participantId") participantId: string,
+  ) {
+    return this.sessionService.reconnectParticipant(sessionId, participantId);
   }
 
   /**
@@ -83,7 +96,7 @@ export class SessionController {
    * Rejoindre une session via mot de passe + pseudo (public)
    */
   @Public()
-  @Post('join')
+  @Post("join")
   joinSession(@Body() dto: JoinSessionDto) {
     return this.sessionService.joinSession(dto);
   }
@@ -92,8 +105,8 @@ export class SessionController {
    * DELETE /api/sessions/:id
    * Terminer/fermer une session
    */
-  @Delete(':id')
-  endSession(@Param('id') id: string, @CurrentUser() user: JwtPayload) {
+  @Delete(":id")
+  endSession(@Param("id") id: string, @CurrentUser() user: JwtPayload) {
     return this.sessionService.endSession(id, user.sub);
   }
 }

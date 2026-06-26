@@ -29,14 +29,14 @@ export function calculatePoints(
 export function checkAnswer(
   submittedAnswers: string[],
   correctAnswers: string[],
-  type: 'single' | 'multiple',
+  type: "single" | "multiple",
 ): boolean {
   if (!submittedAnswers || submittedAnswers.length === 0) return false;
 
   const submitted = [...submittedAnswers].sort();
   const correct = [...correctAnswers].sort();
 
-  if (type === 'single') {
+  if (type === "single") {
     return submitted.length === 1 && submitted[0] === correct[0];
   }
 
@@ -51,8 +51,8 @@ export function checkAnswer(
  * Génère un mot de passe de session aléatoire (6 caractères alphanumériques).
  */
 export function generateSessionPassword(): string {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  let result = '';
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let result = "";
   for (let i = 0; i < 6; i++) {
     result += chars.charAt(Math.floor(Math.random() * chars.length));
   }
@@ -61,6 +61,7 @@ export function generateSessionPassword(): string {
 
 /**
  * Trie et calcule le classement depuis la liste des participants.
+ * AMÉLIORATION AUDIT #3: Ajout des gaps et du podium
  */
 export function buildLeaderboard(
   participants: Array<{
@@ -77,15 +78,27 @@ export function buildLeaderboard(
   score: number;
   last_points: number;
   answered_current: boolean;
+  gap_to_next: number | null;
+  gap_to_podium: number | null;
+  on_podium: boolean;
 }> {
-  return [...participants]
-    .sort((a, b) => b.score - a.score)
-    .map((p, index) => ({
-      rank: index + 1,
+  const sorted = [...participants].sort((a, b) => b.score - a.score);
+
+  return sorted.map((p, index) => {
+    const rank = index + 1;
+    const gapToNext = index > 0 ? sorted[index - 1].score - p.score : null;
+    const gapToPodium = rank > 3 ? (sorted[2]?.score ?? 0) - p.score : null;
+
+    return {
+      rank,
       participant_id: p.id,
       pseudo: p.pseudo,
       score: p.score,
       last_points: p.last_points ?? 0,
       answered_current: p.answered_current ?? false,
-    }));
+      gap_to_next: gapToNext,
+      gap_to_podium: gapToPodium,
+      on_podium: rank <= 3,
+    };
+  });
 }
