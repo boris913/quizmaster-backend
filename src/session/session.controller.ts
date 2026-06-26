@@ -1,0 +1,99 @@
+import {
+  Controller,
+  Post,
+  Get,
+  Delete,
+  Body,
+  Param,
+  UseGuards,
+} from '@nestjs/common';
+import { SessionService } from './session.service';
+import { CreateSessionDto, JoinSessionDto } from './dto/session.dto';
+import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
+import {
+  CurrentUser,
+  JwtPayload,
+} from '../common/decorators/current-user.decorator';
+import { Public } from '../common/decorators/public.decorator';
+
+@Controller('sessions')
+@UseGuards(JwtAuthGuard)
+export class SessionController {
+  constructor(private readonly sessionService: SessionService) {}
+
+  /**
+   * GET /api/sessions
+   * Sessions du créateur connecté
+   */
+  @Get()
+  getCreatorSessions(@CurrentUser() user: JwtPayload) {
+    return this.sessionService.getCreatorSessions(user.sub);
+  }
+
+  /**
+   * GET /api/sessions/:id
+   * Détail d'une session (créateur seulement)
+   */
+  @Get(':id')
+  getSession(@Param('id') id: string, @CurrentUser() user: JwtPayload) {
+    return this.sessionService.getSessionByCreator(id, user.sub);
+  }
+
+  /**
+   * GET /api/sessions/:id/participants
+   * Liste des participants d'une session
+   */
+  @Get(':id/participants')
+  getParticipants(@Param('id') id: string) {
+    return this.sessionService.getSessionParticipants(id);
+  }
+
+  /**
+   * GET /api/sessions/:id/leaderboard
+   * Classement d'une session
+   */
+  @Get(':id/leaderboard')
+  getLeaderboard(@Param('id') id: string) {
+    return this.sessionService.getSessionLeaderboard(id);
+  }
+
+  /**
+   * GET /api/sessions/:id/results
+   * Résultats finaux d'une session
+   */
+  @Get(':id/results')
+  getResults(@Param('id') id: string) {
+    return this.sessionService.getSessionResults(id);
+  }
+
+  /**
+   * POST /api/sessions
+   * Créer une nouvelle session de quiz (créateur authentifié)
+   */
+  @Post()
+  createSession(
+    @Body() dto: CreateSessionDto,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.sessionService.createSession(user.sub, dto);
+  }
+
+  /**
+   * POST /api/sessions/join
+   * Rejoindre une session via mot de passe + pseudo (public)
+   */
+  @Public()
+  @Post('join')
+  joinSession(@Body() dto: JoinSessionDto) {
+    return this.sessionService.joinSession(dto);
+  }
+
+  /**
+   * DELETE /api/sessions/:id
+   * Terminer/fermer une session
+   */
+  @Delete(':id')
+  endSession(@Param('id') id: string, @CurrentUser() user: JwtPayload) {
+    return this.sessionService.endSession(id, user.sub);
+  }
+}
