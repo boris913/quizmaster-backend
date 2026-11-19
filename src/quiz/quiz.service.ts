@@ -41,6 +41,9 @@ export class QuizService {
     return this.getQuizById(quiz.id, creatorId);
   }
 
+  // TODO(sécurité) : requesterId n'est pas utilisé, aucun contrôle de propriétaire
+  // n'est fait (voir PR #2). Désactivation ciblée pour ne pas modifier le métier ici.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   async getQuizById(quizId: string, requesterId?: string) {
     const { data: quiz, error } = await this.supabase
       .from("quizzes")
