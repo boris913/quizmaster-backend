@@ -1,8 +1,8 @@
-import { NotFoundException } from "@nestjs/common";
+import { NotFoundException, ServiceUnavailableException } from "@nestjs/common";
 import { Test } from "@nestjs/testing";
 import { SUPABASE_CLIENT } from "../database/database.module";
 import { createSupabaseMock, SupabaseMock } from "../test-utils/supabase.mock";
-import { SessionService } from "./session.service";
+import { MAX_SESSION_CODE_ATTEMPTS, SessionService } from "./session.service";
 
 const OWNER = "user-owner";
 const OTHER = "user-other";
@@ -149,6 +149,90 @@ describe("SessionService : contrôle de propriété", () => {
         service.createSession(OTHER, { quiz_id: "quiz1" }),
       ).rejects.toBeInstanceOf(NotFoundException);
       expect(supabase.queriesFor("sessions")).toHaveLength(0);
+    });
+  });
+
+  describe("createSession : unicité du code", () => {
+    const quiz = {
+      id: "quiz1",
+      creator_id: OWNER,
+      total_questions: 3,
+      title: "Mon quiz",
+    };
+    const codeOf = (q: { calls: { method: string; args: unknown[] }[] }) =>
+      q.calls.find((c) => c.method === "eq" && c.args[0] === "password")
+        ?.args[1];
+
+    it("retire un nouveau code tant qu'il est déjà utilisé", async () => {
+      supabase
+        .mockResponse("quizzes", { data: quiz })
+        .mockResponse("sessions", { data: { id: "existing1" } })
+        .mockResponse("sessions", { data: { id: "existing2" } })
+        .mockResponse("sessions", { data: null })
+        .mockResponse("sessions", { data: { id: "s-new" } });
+
+      const created = await service.createSession(OWNER, { quiz_id: "quiz1" });
+
+      const sessionQueries = supabase.queriesFor("sessions");
+      // 3 vérifications d'unicité + 1 insertion
+      expect(sessionQueries).toHaveLength(4);
+      const insert = sessionQueries[3].calls.find((c) => c.method === "insert");
+      const inserted = insert?.args[0] as { password: string };
+      expect(inserted.password).toBe(codeOf(sessionQueries[2]));
+      expect(inserted.password).toMatch(/^[ABCDEFGHJKMNPQRSTUVWXYZ2-9]{6}$/);
+      expect(created.id).toBe("s-new");
+    });
+
+    it("vérifie l'unicité parmi toutes les sessions joignables", async () => {
+      supabase
+        .mockResponse("quizzes", { data: quiz })
+        .mockResponse("sessions", { data: null })
+        .mockResponse("sessions", { data: { id: "s-new" } });
+
+      await service.createSession(OWNER, { quiz_id: "quiz1" });
+
+      const check = supabase.queriesFor("sessions")[0];
+      expect(check.calls).toContainEqual({
+        method: "in",
+        args: ["status", ["waiting", "active", "paused"]],
+      });
+    });
+
+    it("lève une erreur explicite après le nombre maximal de tentatives, sans insérer", async () => {
+      supabase.mockResponse("quizzes", { data: quiz });
+      for (let i = 0; i < MAX_SESSION_CODE_ATTEMPTS; i++) {
+        supabase.mockResponse("sessions", { data: { id: `existing${i}` } });
+      }
+
+      await expect(
+        service.createSession(OWNER, { quiz_id: "quiz1" }),
+      ).rejects.toBeInstanceOf(ServiceUnavailableException);
+
+      const sessionQueries = supabase.queriesFor("sessions");
+      expect(sessionQueries).toHaveLength(MAX_SESSION_CODE_ATTEMPTS);
+      expect(
+        sessionQueries.some((q) => q.calls.some((c) => c.method === "insert")),
+      ).toBe(false);
+    });
+  });
+
+  describe("joinSession : normalisation du code", () => {
+    it.each([
+      ["abc234", "ABC234"],
+      ["  abc234  ", "ABC234"],
+      ["ab c2 34", "ABC234"],
+      ["lmn234", "LMN234"], // ancien code contenant L : toujours accepté
+    ])("recherche %p sous la forme %p", async (input, expected) => {
+      supabase.mockResponse("sessions", { data: null });
+
+      await expect(
+        service.joinSession({ password: input, pseudo: "Alice" }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+
+      expect(supabase.queriesFor("sessions")[0].calls).toContainEqual({
+        method: "eq",
+        args: ["password", expected],
+      });
     });
   });
 

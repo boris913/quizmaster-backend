@@ -5,11 +5,18 @@ import {
   ConflictException,
   ForbiddenException,
   BadRequestException,
+  ServiceUnavailableException,
 } from "@nestjs/common";
 import { SupabaseClient } from "@supabase/supabase-js";
 import { SUPABASE_CLIENT } from "../database/database.module";
 import { CreateSessionDto, JoinSessionDto } from "./dto/session.dto";
-import { generateSessionPassword } from "../common/utils/scoring.util";
+import {
+  generateSessionPassword,
+  normalizeSessionCode,
+} from "../common/utils/scoring.util";
+
+/** Nombre maximal de tirages pour obtenir un code de session unique. */
+export const MAX_SESSION_CODE_ATTEMPTS = 10;
 
 @Injectable()
 export class SessionService {
@@ -35,20 +42,27 @@ export class SessionService {
       throw new BadRequestException("Le quiz doit avoir au moins une question");
     }
 
-    // Générer un mot de passe unique
-    let password: string;
-    let attempts = 0;
-    do {
-      password = generateSessionPassword();
+    // Générer un code unique parmi les sessions joignables
+    let password: string | null = null;
+    for (let attempt = 0; attempt < MAX_SESSION_CODE_ATTEMPTS; attempt++) {
+      const candidate = generateSessionPassword();
       const { data: existing } = await this.supabase
         .from("sessions")
         .select("id")
-        .eq("password", password)
-        .eq("status", "waiting")
-        .single();
-      if (!existing) break;
-      attempts++;
-    } while (attempts < 10);
+        .eq("password", candidate)
+        .in("status", ["waiting", "active", "paused"])
+        .limit(1)
+        .maybeSingle();
+      if (!existing) {
+        password = candidate;
+        break;
+      }
+    }
+    if (!password) {
+      throw new ServiceUnavailableException(
+        "Impossible de générer un code de session unique, veuillez réessayer.",
+      );
+    }
 
     const { data: session, error } = await this.supabase
       .from("sessions")
@@ -139,7 +153,7 @@ export class SessionService {
     const { data: session, error: sessionError } = await this.supabase
       .from("sessions")
       .select("id, status, quiz_id, quizzes(title, total_questions)")
-      .eq("password", dto.password.toUpperCase())
+      .eq("password", normalizeSessionCode(dto.password))
       .in("status", ["waiting", "active", "paused"])
       .single();
 
