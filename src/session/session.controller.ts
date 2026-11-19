@@ -41,29 +41,29 @@ export class SessionController {
 
   /**
    * GET /api/sessions/:id/participants
-   * Liste des participants d'une session
+   * Liste des participants d'une session (créateur seulement)
    */
   @Get(":id/participants")
-  getParticipants(@Param("id") id: string) {
-    return this.sessionService.getSessionParticipants(id);
+  getParticipants(@Param("id") id: string, @CurrentUser() user: JwtPayload) {
+    return this.sessionService.getSessionParticipantsForCreator(id, user.sub);
   }
 
   /**
    * GET /api/sessions/:id/leaderboard
-   * Classement d'une session
+   * Classement d'une session (créateur seulement)
    */
   @Get(":id/leaderboard")
-  getLeaderboard(@Param("id") id: string) {
-    return this.sessionService.getSessionLeaderboard(id);
+  getLeaderboard(@Param("id") id: string, @CurrentUser() user: JwtPayload) {
+    return this.sessionService.getSessionLeaderboardForCreator(id, user.sub);
   }
 
   /**
    * GET /api/sessions/:id/results
-   * Résultats finaux d'une session
+   * Résultats finaux d'une session (créateur seulement)
    */
   @Get(":id/results")
-  getResults(@Param("id") id: string) {
-    return this.sessionService.getSessionResults(id);
+  getResults(@Param("id") id: string, @CurrentUser() user: JwtPayload) {
+    return this.sessionService.getSessionResults(id, user.sub);
   }
 
   /**

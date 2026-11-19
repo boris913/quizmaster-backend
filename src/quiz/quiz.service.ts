@@ -2,7 +2,6 @@ import {
   Injectable,
   Inject,
   NotFoundException,
-  ForbiddenException,
   BadRequestException,
 } from "@nestjs/common";
 import { SupabaseClient } from "@supabase/supabase-js";
@@ -41,17 +40,24 @@ export class QuizService {
     return this.getQuizById(quiz.id, creatorId);
   }
 
-  // TODO(sécurité) : requesterId n'est pas utilisé, aucun contrôle de propriétaire
-  // n'est fait (voir PR #2). Désactivation ciblée pour ne pas modifier le métier ici.
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  async getQuizById(quizId: string, requesterId?: string) {
+  /**
+   * Détail d'un quiz avec ses questions (bonnes réponses comprises), réservé à
+   * son créateur. Renvoie 404 si le quiz n'existe pas OU appartient à un autre
+   * utilisateur, pour ne pas révéler son existence.
+   *
+   * Pas d'usage interne : le gateway charge les questions d'une session en
+   * cours directement depuis la table `questions`.
+   */
+  async getQuizById(quizId: string, requesterId: string) {
     const { data: quiz, error } = await this.supabase
       .from("quizzes")
       .select("*")
       .eq("id", quizId)
       .single();
 
-    if (error || !quiz) throw new NotFoundException("Quiz introuvable");
+    if (error || !quiz || !requesterId || quiz.creator_id !== requesterId) {
+      throw new NotFoundException("Quiz introuvable");
+    }
 
     // Récupérer les questions
     const { data: questions } = await this.supabase
@@ -331,6 +337,11 @@ export class QuizService {
   // HELPER
   // ============================================================
 
+  /**
+   * Vérifie que le quiz appartient à `creatorId`. Renvoie 404 dans les deux
+   * cas (inexistant ou appartenant à un autre) pour ne pas révéler son
+   * existence, comme `getQuizById`.
+   */
   private async assertOwnership(quizId: string, creatorId: string) {
     const { data: quiz } = await this.supabase
       .from("quizzes")
@@ -338,9 +349,8 @@ export class QuizService {
       .eq("id", quizId)
       .single();
 
-    if (!quiz) throw new NotFoundException("Quiz introuvable");
-    if (quiz.creator_id !== creatorId) {
-      throw new ForbiddenException("Vous n'êtes pas le créateur de ce quiz");
+    if (!quiz || !creatorId || quiz.creator_id !== creatorId) {
+      throw new NotFoundException("Quiz introuvable");
     }
   }
 }
