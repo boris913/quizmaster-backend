@@ -1,10 +1,20 @@
 /**
- * Calcule les points obtenus pour une réponse correcte.
+ * Calcule les points obtenus pour une réponse.
  *
  * Formule :
  *   points = maxPoints × (1 - timeTakenMs / (timerSeconds * 1000))
- *   Minimum garanti : 10% des maxPoints
- *   Si réponse fausse ou timeout → 0
+ *   Minimum garanti pour une réponse juste dans le temps : 10 % des maxPoints
+ *   Si réponse fausse ou arrivée après la fin du timer → 0
+ *
+ * Bornes (défense en profondeur, le temps doit être mesuré côté serveur) :
+ *   - la fenêtre de réponse est [0, timerMs] inclus ; au-delà → 0 point ;
+ *   - un temps négatif est ramené à 0 (jamais plus que maxPoints) ;
+ *   - un temps non numérique (NaN, Infinity) est traité comme hors délai ;
+ *   - `timerSeconds <= 0` (ou non numérique) : fenêtre vide, donc toute
+ *     réponse est hors délai → 0 point. On ne lève pas d'erreur : la fonction
+ *     est appelée pendant une partie en direct et la validation de la durée
+ *     relève des DTO (`@Min(5)`), pas du calcul du score ;
+ *   - le résultat est toujours un entier dans [0, maxPoints].
  */
 export function calculatePoints(
   isCorrect: boolean,
@@ -13,13 +23,35 @@ export function calculatePoints(
   maxPoints: number,
 ): number {
   if (!isCorrect) return 0;
+  if (!Number.isFinite(maxPoints) || maxPoints <= 0) return 0;
+  if (!Number.isFinite(timerSeconds) || timerSeconds <= 0) return 0;
 
   const timerMs = timerSeconds * 1000;
-  const ratio = 1 - timeTakenMs / timerMs;
+  if (!Number.isFinite(timeTakenMs) || timeTakenMs > timerMs) return 0;
+
+  const boundedTime = Math.max(0, timeTakenMs);
+  const ratio = 1 - boundedTime / timerMs;
   const raw = Math.round(maxPoints * ratio);
   const minimum = Math.round(maxPoints * 0.1); // 10% minimum
 
-  return Math.max(raw, minimum);
+  return Math.min(maxPoints, Math.max(raw, minimum));
+}
+
+/**
+ * Temps de réponse mesuré côté serveur, en millisecondes, à partir de l'heure
+ * de début de la question (`sessions.question_start_time`) et de l'heure
+ * serveur. Le client ne fournit jamais cette valeur.
+ *
+ * Renvoie `null` si l'heure de début est absente ou invalide.
+ */
+export function computeServerTimeTakenMs(
+  questionStartTime: string | Date | null | undefined,
+  nowMs: number = Date.now(),
+): number | null {
+  if (!questionStartTime) return null;
+  const startMs = new Date(questionStartTime).getTime();
+  if (!Number.isFinite(startMs)) return null;
+  return Math.max(0, nowMs - startMs);
 }
 
 /**

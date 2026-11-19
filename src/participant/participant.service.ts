@@ -5,6 +5,7 @@ import {
   calculatePoints,
   checkAnswer,
   buildLeaderboard,
+  computeServerTimeTakenMs,
 } from "../common/utils/scoring.util";
 
 export interface SubmitAnswerParams {
@@ -12,7 +13,13 @@ export interface SubmitAnswerParams {
   sessionId: string;
   questionId: string;
   answers: string[];
-  timeTakenMs: number;
+  /**
+   * Horodatage serveur de réception de la réponse (ms). Par défaut `Date.now()`.
+   * Le temps de réponse est toujours calculé côté serveur à partir de
+   * `sessions.question_start_time` : aucune durée fournie par le client n'est
+   * prise en compte.
+   */
+  receivedAtMs?: number;
 }
 
 export interface AnswerResult {
@@ -33,11 +40,14 @@ export class ParticipantService {
 
   /**
    * Enregistre la réponse d'un participant et calcule les points.
-   * AMÉLIORATION AUDIT #7: Tolérance réseau de 2 secondes
+   *
+   * Le temps de réponse est mesuré côté serveur : heure de réception moins
+   * `sessions.question_start_time`. Une réponse arrivée après la fin du timer
+   * rapporte 0 point (voir `calculatePoints`).
    */
   async submitAnswer(params: SubmitAnswerParams): Promise<AnswerResult> {
-    const { participantId, sessionId, questionId, answers, timeTakenMs } =
-      params;
+    const { participantId, sessionId, questionId, answers } = params;
+    const receivedAtMs = params.receivedAtMs ?? Date.now();
 
     // Vérifier que le participant n'a pas déjà répondu à cette question
     const { data: existing } = await this.supabase
@@ -69,31 +79,45 @@ export class ParticipantService {
       question.type,
     );
 
-    // AMÉLIORATION AUDIT #7: Calculer le vrai temps côté serveur avec tolérance
+    // Temps de réponse calculé côté serveur uniquement
     const { data: session } = await this.supabase
       .from("sessions")
-      .select("question_start_time")
+      .select(
+        "question_start_time, quizzes (use_global_timer, global_timer_seconds)",
+      )
       .eq("id", sessionId)
       .single();
 
-    const serverTimeTaken =
-      Date.now() -
-      new Date(session?.question_start_time || Date.now()).getTime();
-    const timerMs = question.timer_seconds * 1000;
-
-    // Tolérance de 2 secondes pour le réseau
-    const validTimeTaken = Math.min(
-      Math.max(timeTakenMs, serverTimeTaken - 2000),
-      timerMs,
+    const serverTimeTaken = computeServerTimeTakenMs(
+      session?.question_start_time,
+      receivedAtMs,
     );
+    if (serverTimeTaken === null) {
+      throw new BadRequestException("Aucune question en cours");
+    }
 
-    // Calculer les points avec le temps validé
+    // Même durée que le timer réellement appliqué par le gateway
+    const quiz: any = Array.isArray(session?.quizzes)
+      ? session.quizzes[0]
+      : session?.quizzes;
+    const timerSeconds = quiz?.use_global_timer
+      ? quiz.global_timer_seconds
+      : question.timer_seconds;
+    const timerMs = timerSeconds * 1000;
+
+    // Calculer les points avec le temps mesuré par le serveur
     const pointsEarned = calculatePoints(
       isCorrect,
-      validTimeTaken,
-      question.timer_seconds,
+      serverTimeTaken,
+      timerSeconds,
       question.max_points,
     );
+    // Valeur enregistrée bornée à la durée du timer (une réponse hors délai
+    // vaut 0 point de toute façon)
+    const validTimeTaken =
+      Number.isFinite(timerMs) && timerMs > 0
+        ? Math.min(serverTimeTaken, timerMs)
+        : serverTimeTaken;
 
     // Insérer la réponse dans la base
     const { error: answerError } = await this.supabase

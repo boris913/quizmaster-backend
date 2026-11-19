@@ -27,9 +27,9 @@ export class SessionService {
       .eq("id", dto.quiz_id)
       .single();
 
-    if (!quiz) throw new NotFoundException("Quiz introuvable");
-    if (quiz.creator_id !== creatorId) {
-      throw new ForbiddenException("Vous n'êtes pas le créateur de ce quiz");
+    // 404 aussi si le quiz appartient à un autre : ne pas révéler son existence
+    if (!quiz || !creatorId || quiz.creator_id !== creatorId) {
+      throw new NotFoundException("Quiz introuvable");
     }
     if (quiz.total_questions === 0) {
       throw new BadRequestException("Le quiz doit avoir au moins une question");
@@ -74,11 +74,30 @@ export class SessionService {
   async getSessionByCreator(sessionId: string, creatorId: string) {
     const session = await this.getSessionWithDetails(sessionId);
 
-    if (session.creator_id !== creatorId) {
-      throw new ForbiddenException("Accès refusé");
+    // 404 plutôt que 403 : ne pas révéler l'existence de la session
+    if (!creatorId || session.creator_id !== creatorId) {
+      throw new NotFoundException("Session introuvable");
     }
 
     return session;
+  }
+
+  /**
+   * Participants d'une session, réservé à son créateur (route HTTP).
+   * `getSessionParticipants` reste l'accès interne (gateway), sans contrôle.
+   */
+  async getSessionParticipantsForCreator(sessionId: string, creatorId: string) {
+    await this.assertCreatorSession(sessionId, creatorId);
+    return this.getSessionParticipants(sessionId);
+  }
+
+  /**
+   * Classement d'une session, réservé à son créateur (route HTTP).
+   * `getSessionLeaderboard` reste l'accès interne (gateway), sans contrôle.
+   */
+  async getSessionLeaderboardForCreator(sessionId: string, creatorId: string) {
+    await this.assertCreatorSession(sessionId, creatorId);
+    return this.getSessionLeaderboard(sessionId);
   }
 
   async getCreatorSessions(creatorId: string) {
@@ -257,8 +276,9 @@ export class SessionService {
     }));
   }
 
-  async getSessionResults(sessionId: string) {
-    const session = await this.getSessionWithDetails(sessionId);
+  /** Résultats finaux d'une session, réservés à son créateur. */
+  async getSessionResults(sessionId: string, creatorId: string) {
+    const session = await this.getSessionByCreator(sessionId, creatorId);
     const participants = await this.getSessionParticipants(sessionId);
 
     // Récupérer toutes les réponses de la session
@@ -285,6 +305,11 @@ export class SessionService {
   // HELPERS
   // ============================================================
 
+  /**
+   * Vérifie que la session appartient à `creatorId`. Renvoie 404 dans les deux
+   * cas (inexistante ou appartenant à un autre) pour ne pas révéler son
+   * existence.
+   */
   async assertCreatorSession(sessionId: string, creatorId: string) {
     const { data: session } = await this.supabase
       .from("sessions")
@@ -292,9 +317,8 @@ export class SessionService {
       .eq("id", sessionId)
       .single();
 
-    if (!session) throw new NotFoundException("Session introuvable");
-    if (session.creator_id !== creatorId) {
-      throw new ForbiddenException("Accès refusé");
+    if (!session || !creatorId || session.creator_id !== creatorId) {
+      throw new NotFoundException("Session introuvable");
     }
 
     return session;
@@ -319,12 +343,16 @@ export class SessionService {
     return data;
   }
 
-  async setCurrentQuestion(sessionId: string, questionIndex: number) {
+  async setCurrentQuestion(
+    sessionId: string,
+    questionIndex: number,
+    startedAt: Date = new Date(),
+  ) {
     const { data, error } = await this.supabase
       .from("sessions")
       .update({
         current_question_index: questionIndex,
-        question_start_time: new Date().toISOString(),
+        question_start_time: startedAt.toISOString(),
         status: "active",
       })
       .eq("id", sessionId)

@@ -2,6 +2,7 @@ import {
   buildLeaderboard,
   calculatePoints,
   checkAnswer,
+  computeServerTimeTakenMs,
   generateSessionPassword,
 } from "./scoring.util";
 
@@ -41,16 +42,76 @@ describe("calculatePoints", () => {
     expect(calculatePoints(false, TIMER_S * 1000, TIMER_S, MAX)).toBe(0);
   });
 
-  it("[comportement actuel] une réponse juste arrivée au-delà du timer reçoit le plancher de 10 %, pas 0", () => {
-    // La doc annonce « timeout → 0 », mais calculatePoints ne vérifie pas le
-    // dépassement : seul le plancher s'applique. Voir la PR (bug signalé).
+  it("accepte une réponse juste pile à la fin du timer (plancher de 10 %)", () => {
+    // La fenêtre de réponse est [0, timerMs] inclus.
     expect(calculatePoints(true, 30000, TIMER_S, MAX)).toBe(10);
-    expect(calculatePoints(true, 60000, TIMER_S, MAX)).toBe(10);
   });
 
-  it("[comportement actuel] un temps négatif donne plus que les points max", () => {
-    // Aucun bornage de timeTakenMs côté fonction. Voir la PR (bug signalé).
-    expect(calculatePoints(true, -3000, TIMER_S, MAX)).toBe(110);
+  it("renvoie 0 pour une réponse juste arrivée après la fin du timer", () => {
+    expect(calculatePoints(true, 30001, TIMER_S, MAX)).toBe(0);
+    expect(calculatePoints(true, 60000, TIMER_S, MAX)).toBe(0);
+  });
+
+  it("ramène un temps négatif à 0 : jamais plus que les points max", () => {
+    expect(calculatePoints(true, -3000, TIMER_S, MAX)).toBe(100);
+    expect(calculatePoints(true, -1, TIMER_S, MAX)).toBe(100);
+    expect(calculatePoints(true, -1e12, TIMER_S, MAX)).toBe(100);
+  });
+
+  it("traite un temps non numérique comme hors délai", () => {
+    expect(calculatePoints(true, NaN, TIMER_S, MAX)).toBe(0);
+    expect(calculatePoints(true, Infinity, TIMER_S, MAX)).toBe(0);
+    expect(calculatePoints(true, -Infinity, TIMER_S, MAX)).toBe(0);
+  });
+
+  it("renvoie 0 (sans division par zéro) si timerSeconds <= 0", () => {
+    expect(calculatePoints(true, 0, 0, MAX)).toBe(0);
+    expect(calculatePoints(true, 1000, 0, MAX)).toBe(0);
+    expect(calculatePoints(true, 0, -10, MAX)).toBe(0);
+    expect(calculatePoints(true, 0, NaN, MAX)).toBe(0);
+  });
+
+  it("renvoie 0 si maxPoints n'est pas strictement positif", () => {
+    expect(calculatePoints(true, 0, TIMER_S, 0)).toBe(0);
+    expect(calculatePoints(true, 0, TIMER_S, -100)).toBe(0);
+  });
+
+  it("garantit un entier entre 0 et maxPoints pour toute entrée", () => {
+    const times = [-1e9, -3000, -1, 0, 1, 999, 15000, 29999, 30000, 30001, 1e9];
+    const timers = [-5, 0, 0.001, 1, 30, 120];
+    const maxes = [1, 5, 10, 100, 150, 1000];
+    for (const t of times) {
+      for (const timer of timers) {
+        for (const max of maxes) {
+          for (const correct of [true, false]) {
+            const points = calculatePoints(correct, t, timer, max);
+            expect(Number.isInteger(points)).toBe(true);
+            expect(points).toBeGreaterThanOrEqual(0);
+            expect(points).toBeLessThanOrEqual(max);
+          }
+        }
+      }
+    }
+  });
+});
+
+describe("computeServerTimeTakenMs", () => {
+  const START = "2026-01-01T10:00:00.000Z";
+  const startMs = new Date(START).getTime();
+
+  it("calcule l'écart entre l'heure serveur et le début de la question", () => {
+    expect(computeServerTimeTakenMs(START, startMs + 4200)).toBe(4200);
+    expect(computeServerTimeTakenMs(new Date(START), startMs + 10)).toBe(10);
+  });
+
+  it("ne renvoie jamais un temps négatif (horloge en avance)", () => {
+    expect(computeServerTimeTakenMs(START, startMs - 5000)).toBe(0);
+  });
+
+  it("renvoie null si l'heure de début est absente ou invalide", () => {
+    expect(computeServerTimeTakenMs(null)).toBeNull();
+    expect(computeServerTimeTakenMs(undefined)).toBeNull();
+    expect(computeServerTimeTakenMs("pas une date")).toBeNull();
   });
 });
 

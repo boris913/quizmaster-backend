@@ -41,7 +41,8 @@ interface WsSubmitAnswerPayload {
   participantId: string;
   questionId: string;
   answers: string[];
-  timeTakenMs: number;
+  /** Ignoré : le temps de réponse est calculé côté serveur. */
+  timeTakenMs?: number;
 }
 
 interface WsEndQuizPayload {
@@ -270,9 +271,8 @@ export class QuizGateway implements OnGatewayConnection, OnGatewayDisconnect {
     try {
       const { sessionId, questionIndex } = payload;
 
-      // Vérifier que ce socket est bien un créateur
-      const meta = this.socketMeta.get(client.id);
-      if (meta?.role !== "creator") {
+      // Vérifier que ce socket est le créateur authentifié de CETTE session
+      if (!this.isCreatorOfSession(client, sessionId)) {
         throw new WsException("Seul le créateur peut lancer une question");
       }
 
@@ -303,9 +303,6 @@ export class QuizGateway implements OnGatewayConnection, OnGatewayDisconnect {
         ? quiz.global_timer_seconds
         : question.timer_seconds;
 
-      // Mettre à jour la session en BDD
-      await this.sessionService.setCurrentQuestion(sessionId, questionIndex);
-
       // Remettre TOUS les participants en état "answering"
       await this.supabase
         .from("participants")
@@ -330,6 +327,15 @@ export class QuizGateway implements OnGatewayConnection, OnGatewayDisconnect {
       await this.sendCountdown(sessionId, 3);
 
       const questionStartTime = Date.now();
+
+      // Mettre à jour la session en BDD. question_start_time est la référence
+      // du calcul du temps de réponse côté serveur : elle est fixée à la fin
+      // du compte à rebours, au moment où la question est diffusée.
+      await this.sessionService.setCurrentQuestion(
+        sessionId,
+        questionIndex,
+        new Date(questionStartTime),
+      );
 
       // Broadcast à TOUS les participants
       this.server.to(`session:${sessionId}`).emit("question:start", {
@@ -397,9 +403,10 @@ export class QuizGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @ConnectedSocket() client: Socket,
     @MessageBody() payload: WsSubmitAnswerPayload,
   ) {
+    // Heure de réception côté serveur : seule base du temps de réponse
+    const receivedAtMs = Date.now();
     try {
-      const { sessionId, participantId, questionId, answers, timeTakenMs } =
-        payload;
+      const { sessionId, participantId, questionId, answers } = payload;
 
       // Vérifier que la question est toujours active
       const activeQ = this.activeQuestions.get(sessionId);
@@ -416,7 +423,7 @@ export class QuizGateway implements OnGatewayConnection, OnGatewayDisconnect {
         sessionId,
         questionId,
         answers,
-        timeTakenMs,
+        receivedAtMs,
       });
 
       // Mettre à jour le statut du participant
@@ -509,12 +516,11 @@ export class QuizGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @MessageBody() payload: WsEndQuizPayload,
   ) {
     try {
-      const meta = this.socketMeta.get(client.id);
-      if (meta?.role !== "creator") {
+      const { sessionId } = payload;
+
+      if (!this.isCreatorOfSession(client, sessionId)) {
         throw new WsException("Seul le créateur peut terminer le quiz");
       }
-
-      const { sessionId } = payload;
 
       // Annuler le timer actif
       const activeQ = this.activeQuestions.get(sessionId);
@@ -605,8 +611,7 @@ export class QuizGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @ConnectedSocket() client: Socket,
     @MessageBody() payload: { sessionId: string },
   ) {
-    const meta = this.socketMeta.get(client.id);
-    if (meta?.role !== "creator") return;
+    if (!this.isCreatorOfSession(client, payload?.sessionId)) return;
 
     await this.sessionService.updateSessionStatus(payload.sessionId, "paused");
     this.server.to(`session:${payload.sessionId}`).emit("session:paused", {});
@@ -621,11 +626,28 @@ export class QuizGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @ConnectedSocket() client: Socket,
     @MessageBody() payload: { sessionId: string },
   ) {
-    const meta = this.socketMeta.get(client.id);
-    if (meta?.role !== "creator") return;
+    if (!this.isCreatorOfSession(client, payload?.sessionId)) return;
 
     await this.sessionService.updateSessionStatus(payload.sessionId, "active");
     this.server.to(`session:${payload.sessionId}`).emit("session:resumed", {});
+  }
+
+  // ============================================================
+  // CONTRÔLE D'ACCÈS CRÉATEUR
+  // ============================================================
+
+  /**
+   * Vrai si ce socket a été authentifié via "creator:join" (JWT + propriété
+   * de la session vérifiées) pour la session visée. Le rôle seul ne suffit
+   * pas : le créateur d'une session ne doit pas pouvoir piloter une autre.
+   */
+  isCreatorOfSession(client: Socket, sessionId: string | undefined): boolean {
+    const meta = this.socketMeta.get(client.id);
+    return (
+      meta?.role === "creator" &&
+      typeof sessionId === "string" &&
+      meta.sessionId === sessionId
+    );
   }
 
   // ============================================================
