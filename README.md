@@ -191,7 +191,7 @@ socket.emit('answer:submit', {
   participantId: string,
   questionId: string,
   answers: string[],       // ex: ['A'] ou ['A', 'C']
-  timeTakenMs: number      // temps mesuré côté client (validé serveur)
+  // timeTakenMs (optionnel) est ignoré : le temps est mesuré côté serveur
 })
 ```
 
@@ -272,13 +272,18 @@ socket.emit('session:resume', { sessionId: string })
 ## Algorithme de Scoring
 
 ```
-Si réponse FAUSSE ou TIMEOUT → 0 points
+Si réponse FAUSSE, TIMEOUT ou arrivée après la fin du timer → 0 points
 
-Si réponse CORRECTE :
+Si réponse CORRECTE dans le temps imparti :
+  timeTakenMs = heure de réception serveur - sessions.question_start_time
   points = maxPoints × (1 - timeTakenMs / (timerSeconds × 1000))
   minimum = maxPoints × 0.10   (10% garanti)
-  points = Math.max(points, minimum)
+  points = Math.max(points, minimum), borné à [0, maxPoints]
 ```
+
+Le temps de réponse est toujours mesuré par le serveur ; aucune durée envoyée
+par le client n'est prise en compte. Un timer de durée nulle ou négative donne
+0 point.
 
 **Exemple :**
 - Question : 100 pts max, 30 secondes
