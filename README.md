@@ -35,8 +35,52 @@ npm run start:prod
 ## Configuration Supabase
 
 1. Créer un projet sur [supabase.com](https://supabase.com)
-2. Aller dans **SQL Editor** et exécuter le fichier `supabase-schema.sql`
+2. Aller dans **SQL Editor** et exécuter, dans l'ordre, les fichiers du dossier
+   [`migrations/`](migrations/README.md) (en commençant par `000_initial_schema.sql`)
 3. Copier `SUPABASE_URL` et `SUPABASE_SERVICE_ROLE_KEY` depuis **Settings → API**
+
+### Migrations
+
+Toute évolution du schéma se fait par un **nouveau fichier** `migrations/NNN_description.sql`
+(idempotent, jamais d'édition d'une migration existante). `supabase-schema.sql` reste le
+schéma de référence initial. Convention complète : [`migrations/README.md`](migrations/README.md).
+
+---
+
+## Tests et qualité
+
+```bash
+npm test             # tests unitaires (Jest, fichiers src/**/*.spec.ts)
+npm run test:cov     # avec couverture (dossier coverage/)
+npm run lint:check   # ESLint sans correction automatique (utilisé par la CI)
+npm run lint         # ESLint avec --fix
+npm run build        # compilation (exclut les *.spec.ts et src/test-utils)
+```
+
+Les services se testent sans base réelle grâce au mock chaînable
+`src/test-utils/supabase.mock.ts` :
+
+```typescript
+const supabase = createSupabaseMock();
+supabase.mockResponse("participants", { data: { id: "p1", score: 10 } });
+
+const moduleRef = await Test.createTestingModule({
+  providers: [
+    ParticipantService,
+    { provide: SUPABASE_CLIENT, useValue: supabase.client },
+  ],
+}).compile();
+```
+
+Chaque `from(table)` consomme la prochaine réponse enregistrée pour cette table (FIFO) ;
+les appels sont consultables via `supabase.queriesFor(table)`. Exemple complet :
+`src/participant/participant.service.spec.ts`.
+
+### Intégration continue
+
+`.github/workflows/ci.yml` s'exécute sur chaque pull request et sur chaque push sur `main`
+(Node 20) : `npm ci`, `npm run lint:check`, `npm test`, `npm run build`. Une PR n'est
+mergeable que si ces étapes passent.
 
 ---
 
@@ -69,15 +113,17 @@ src/
 ├── gateway/
 │   ├── quiz.gateway.ts            # WebSocket (cœur temps réel)
 │   └── gateway.module.ts
-└── common/
-    ├── types/index.ts             # Interfaces TypeScript
-    ├── utils/scoring.util.ts      # Calcul points, classement
-    ├── guards/
-    │   ├── jwt-auth.guard.ts      # Guard HTTP
-    │   └── ws-jwt.guard.ts        # Guard WebSocket
-    └── decorators/
-        ├── public.decorator.ts
-        └── current-user.decorator.ts
+├── common/
+│   ├── types/index.ts             # Interfaces TypeScript
+│   ├── utils/scoring.util.ts      # Calcul points, classement
+│   ├── guards/
+│   │   ├── jwt-auth.guard.ts      # Guard HTTP
+│   │   └── ws-jwt.guard.ts        # Guard WebSocket
+│   └── decorators/
+│       ├── public.decorator.ts
+│       └── current-user.decorator.ts
+└── test-utils/
+    └── supabase.mock.ts           # Mock chaînable du client Supabase (tests)
 ```
 
 ---
