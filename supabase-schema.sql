@@ -1,4 +1,12 @@
 -- ============================================================
+-- SCHÉMA DE RÉFÉRENCE — ne plus modifier directement.
+-- Les évolutions du schéma passent par des fichiers incrémentaux
+-- dans migrations/ (convention : migrations/README.md).
+-- Contenu identique à migrations/000_initial_schema.sql ; le schéma
+-- courant = 000 + toutes les migrations suivantes, dans l'ordre.
+-- ============================================================
+
+-- ============================================================
 -- QuizMaster — Schéma Supabase (PostgreSQL)
 -- À exécuter dans l'éditeur SQL de Supabase
 -- ============================================================
