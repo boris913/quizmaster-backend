@@ -16,6 +16,7 @@ import { SupabaseClient } from "@supabase/supabase-js";
 import { SUPABASE_CLIENT } from "../database/database.module";
 import { SessionService } from "../session/session.service";
 import { ParticipantService } from "../participant/participant.service";
+import { NICKNAME_ERRORS } from "../common/utils/nickname.util";
 
 // ============================================================
 // Payloads entrants (client → serveur)
@@ -47,6 +48,11 @@ interface WsSubmitAnswerPayload {
 
 interface WsEndQuizPayload {
   sessionId: string;
+}
+
+interface WsCreatorKickPayload {
+  sessionId: string;
+  participantId: string;
 }
 
 // Map interne: sessionId → { timerId, questionStartTime }
@@ -109,7 +115,8 @@ export class QuizGateway implements OnGatewayConnection, OnGatewayDisconnect {
       await this.supabase
         .from("participants")
         .update({ status: "disconnected", socket_id: null })
-        .eq("id", meta.participantId);
+        .eq("id", meta.participantId)
+        .neq("status", "kicked");
 
       if (meta.sessionId) {
         // Notifier le créateur
@@ -140,6 +147,12 @@ export class QuizGateway implements OnGatewayConnection, OnGatewayDisconnect {
     try {
       const { sessionId, participantId } = payload;
 
+      // Participant de cette session, non exclu, pseudo conforme au mode
+      await this.sessionService.assertParticipantCanJoin(
+        sessionId,
+        participantId,
+      );
+
       // Rejoindre la room socket de la session
       await client.join(`session:${sessionId}`);
 
@@ -168,7 +181,8 @@ export class QuizGateway implements OnGatewayConnection, OnGatewayDisconnect {
         .from("participants")
         .select("id", { count: "exact", head: true })
         .eq("session_id", sessionId)
-        .neq("status", "disconnected");
+        .neq("status", "disconnected")
+        .neq("status", "kicked");
 
       // Notifier TOUT le monde dans la session (y compris créateur)
       this.server.to(`session:${sessionId}`).emit("participant:joined", {
@@ -193,6 +207,11 @@ export class QuizGateway implements OnGatewayConnection, OnGatewayDisconnect {
       });
     } catch (error) {
       this.logger.error(`Erreur participant:join: ${error.message}`);
+      if (error.message === NICKNAME_ERRORS.kicked) {
+        client.emit("participant:kicked", { reason: "kicked" });
+        client.disconnect(true);
+        return;
+      }
       client.emit("error", { message: error.message });
     }
   }
@@ -308,7 +327,8 @@ export class QuizGateway implements OnGatewayConnection, OnGatewayDisconnect {
         .from("participants")
         .update({ status: "answering" })
         .eq("session_id", sessionId)
-        .neq("status", "disconnected");
+        .neq("status", "disconnected")
+        .neq("status", "kicked");
 
       // Préparer la question SANS les réponses correctes
       const sanitizedQuestion = {
@@ -471,7 +491,8 @@ export class QuizGateway implements OnGatewayConnection, OnGatewayDisconnect {
         .from("participants")
         .select("id", { count: "exact", head: true })
         .eq("session_id", sessionId)
-        .neq("status", "disconnected");
+        .neq("status", "disconnected")
+        .neq("status", "kicked");
 
       // Récupérer le pseudo du participant
       const { data: participant } = await this.supabase
@@ -538,6 +559,7 @@ export class QuizGateway implements OnGatewayConnection, OnGatewayDisconnect {
         .select("id, pseudo, score")
         .eq("session_id", sessionId)
         .neq("status", "disconnected")
+        .neq("status", "kicked")
         .order("score", { ascending: false });
 
       const finalLeaderboard = (finalParticipants || []).map((p, i) => ({
@@ -630,6 +652,59 @@ export class QuizGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     await this.sessionService.updateSessionStatus(payload.sessionId, "active");
     this.server.to(`session:${payload.sessionId}`).emit("session:resumed", {});
+  }
+
+  /**
+   * Événement: "creator:kick" (issue #5)
+   * Le créateur exclut un participant : statut "kicked", "participant:kicked"
+   * envoyé au socket du joueur, puis déconnexion. La reconnexion (REST et
+   * "participant:join") et le même pseudo sont ensuite refusés.
+   */
+  @SubscribeMessage("creator:kick")
+  async handleCreatorKick(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: WsCreatorKickPayload,
+  ) {
+    try {
+      const { sessionId, participantId } = payload ?? ({} as any);
+
+      if (!this.isCreatorOfSession(client, sessionId)) {
+        throw new WsException("Seul le créateur peut exclure un participant");
+      }
+      if (typeof participantId !== "string" || !participantId) {
+        throw new WsException("Participant introuvable");
+      }
+
+      await this.sessionService.kickParticipant(sessionId, participantId);
+
+      // Prévenir puis déconnecter le(s) socket(s) du joueur exclu. Les
+      // métadonnées sont retirées d'abord pour que handleDisconnect ne
+      // repasse pas le participant en "disconnected".
+      const sockets = await this.server
+        .in(`session:${sessionId}`)
+        .fetchSockets();
+      for (const socket of sockets) {
+        const meta = this.socketMeta.get(socket.id);
+        if (meta?.role !== "participant" || meta.participantId !== participantId)
+          continue;
+        this.socketMeta.delete(socket.id);
+        socket.emit("participant:kicked", { reason: "kicked" });
+        socket.disconnect(true);
+      }
+
+      // Mise à jour habituelle de la liste des participants côté créateur
+      this.server.to(`creator:${sessionId}`).emit("participant:disconnected", {
+        participant_id: participantId,
+        reason: "kicked",
+      });
+
+      this.logger.log(
+        `Participant ${participantId} exclu de la session ${sessionId}`,
+      );
+    } catch (error) {
+      this.logger.error(`Erreur creator:kick: ${error.message}`);
+      client.emit("error", { message: error.message });
+    }
   }
 
   // ============================================================
