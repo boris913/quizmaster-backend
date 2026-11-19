@@ -42,6 +42,8 @@ export interface Session {
   question_start_time?: string;
   started_at?: string;
   ended_at?: string;
+  /** Date d'anonymisation des participants (migration 002), sinon null. */
+  anonymized_at?: string | null;
   created_at: string;
 }
 
