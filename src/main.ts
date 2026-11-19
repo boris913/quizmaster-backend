@@ -1,13 +1,27 @@
 import { NestFactory } from "@nestjs/core";
-import { ValidationPipe } from "@nestjs/common";
+import { Logger, ValidationPipe } from "@nestjs/common";
 import { AppModule } from "./app.module";
+import {
+  corsOriginCallback,
+  getAllowedOrigins,
+  isUsingDefaultOrigins,
+} from "./common/utils/cors.util";
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
-  // CORS pour le frontend Next.js
+  // CORS : origines autorisées via CORS_ORIGINS (voir common/utils/cors.util.ts)
+  const logger = new Logger("Bootstrap");
+  if (isUsingDefaultOrigins()) {
+    const msg =
+      "CORS_ORIGINS non défini : seule l'origine de développement http://localhost:3000 est autorisée.";
+    if (process.env.NODE_ENV === "production") logger.warn(msg);
+    else logger.log(msg);
+  } else {
+    logger.log(`CORS autorisé pour : ${getAllowedOrigins().join(", ")}`);
+  }
   app.enableCors({
-    origin: process.env.FRONTEND_URL || "http://localhost:3000",
+    origin: corsOriginCallback,
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
