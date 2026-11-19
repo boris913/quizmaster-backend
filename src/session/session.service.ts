@@ -10,6 +10,14 @@ import { SupabaseClient } from "@supabase/supabase-js";
 import { SUPABASE_CLIENT } from "../database/database.module";
 import { CreateSessionDto, JoinSessionDto } from "./dto/session.dto";
 import { generateSessionPassword } from "../common/utils/scoring.util";
+import {
+  buildSessionResults,
+  ResultsAnswerRow,
+  ResultsParticipantRow,
+  ResultsQuestionRow,
+  SessionResults,
+} from "./results/session-results";
+import { buildResultsCsv, resultsCsvFilename } from "./results/results-csv";
 
 @Injectable()
 export class SessionService {
@@ -276,29 +284,72 @@ export class SessionService {
     }));
   }
 
-  /** Résultats finaux d'une session, réservés à son créateur. */
-  async getSessionResults(sessionId: string, creatorId: string) {
-    const session = await this.getSessionByCreator(sessionId, creatorId);
-    const participants = await this.getSessionParticipants(sessionId);
+  /**
+   * Résultats enrichis d'une session, réservés à son créateur (404 sinon).
+   * Contrat : voir `SessionResults` (issue #4).
+   */
+  async getSessionResults(
+    sessionId: string,
+    creatorId: string,
+  ): Promise<SessionResults> {
+    const { results } = await this.loadSessionResults(sessionId, creatorId);
+    return results;
+  }
 
-    // Récupérer toutes les réponses de la session
-    const { data: answers } = await this.supabase
-      .from("participant_answers")
-      .select("*")
-      .eq("session_id", sessionId);
-
-    const leaderboard = participants.map((p, index) => ({
-      rank: index + 1,
-      participant_id: p.id,
-      pseudo: p.pseudo,
-      score: p.score,
-    }));
-
+  /** Export CSV des résultats (`;`, UTF-8 avec BOM), réservé au créateur. */
+  async getSessionResultsCsv(
+    sessionId: string,
+    creatorId: string,
+  ): Promise<{ filename: string; csv: string }> {
+    const { results, answers } = await this.loadSessionResults(
+      sessionId,
+      creatorId,
+    );
     return {
-      session,
-      leaderboard,
-      total_answers: answers?.length || 0,
+      filename: resultsCsvFilename(results),
+      csv: buildResultsCsv(results, answers),
     };
+  }
+
+  private async loadSessionResults(sessionId: string, creatorId: string) {
+    // Contrôle de propriété avant toute autre lecture
+    const session = await this.getSessionByCreator(sessionId, creatorId);
+
+    const [questionsRes, participantsRes, answersRes] = await Promise.all([
+      this.supabase
+        .from("questions")
+        .select("id, order_index, text, type, options, correct_answers")
+        .eq("quiz_id", session.quiz_id)
+        .order("order_index", { ascending: true }),
+      // Tous les participants, y compris déconnectés : ils ont joué
+      this.supabase
+        .from("participants")
+        .select("id, pseudo, score")
+        .eq("session_id", sessionId)
+        .order("score", { ascending: false }),
+      this.supabase
+        .from("participant_answers")
+        .select(
+          "participant_id, question_id, answers, status, is_correct, time_taken_ms",
+        )
+        .eq("session_id", sessionId),
+    ]);
+
+    for (const res of [questionsRes, participantsRes, answersRes]) {
+      if (res.error) {
+        throw new Error(`Erreur lecture résultats: ${res.error.message}`);
+      }
+    }
+
+    const answers = (answersRes.data ?? []) as ResultsAnswerRow[];
+    const results = buildSessionResults({
+      session,
+      questions: (questionsRes.data ?? []) as ResultsQuestionRow[],
+      participants: (participantsRes.data ?? []) as ResultsParticipantRow[],
+      answers,
+    });
+
+    return { results, answers };
   }
 
   // ============================================================

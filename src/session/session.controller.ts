@@ -6,7 +6,9 @@ import {
   Body,
   Param,
   UseGuards,
+  Res,
 } from "@nestjs/common";
+import type { Response } from "express";
 import { SessionService } from "./session.service";
 import { CreateSessionDto, JoinSessionDto } from "./dto/session.dto";
 import { JwtAuthGuard } from "../common/guards/jwt-auth.guard";
@@ -64,6 +66,25 @@ export class SessionController {
   @Get(":id/results")
   getResults(@Param("id") id: string, @CurrentUser() user: JwtPayload) {
     return this.sessionService.getSessionResults(id, user.sub);
+  }
+
+  /**
+   * GET /api/sessions/:id/results.csv
+   * Export CSV des résultats (créateur seulement) : séparateur `;`, UTF-8 + BOM
+   */
+  @Get(":id/results.csv")
+  async getResultsCsv(
+    @Param("id") id: string,
+    @CurrentUser() user: JwtPayload,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<string> {
+    const { filename, csv } = await this.sessionService.getSessionResultsCsv(
+      id,
+      user.sub,
+    );
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    return csv;
   }
 
   /**

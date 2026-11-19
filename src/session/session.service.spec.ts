@@ -94,16 +94,60 @@ describe("SessionService : contrôle de propriété", () => {
   });
 
   describe("getSessionResults", () => {
-    it("renvoie les résultats au créateur", async () => {
+    it("renvoie les résultats enrichis au créateur", async () => {
       supabase
         .mockResponse("sessions", { data: session })
+        .mockResponse("questions", {
+          data: [
+            {
+              id: "q1",
+              order_index: 0,
+              text: "Capitale ?",
+              type: "single",
+              options: [{ id: "A" }, { id: "B" }],
+              correct_answers: ["A"],
+            },
+          ],
+        })
         .mockResponse("participants", { data: participants })
-        .mockResponse("participant_answers", { data: [{}, {}, {}] });
+        .mockResponse("participant_answers", {
+          data: [
+            {
+              participant_id: "p1",
+              question_id: "q1",
+              answers: ["A"],
+              status: "answered",
+              is_correct: true,
+              time_taken_ms: 2000,
+            },
+            {
+              participant_id: "p2",
+              question_id: "q1",
+              answers: [],
+              status: "timeout",
+              is_correct: false,
+              time_taken_ms: null,
+            },
+          ],
+        });
 
       const results = await service.getSessionResults("s1", OWNER);
-      expect(results.session).toEqual(session);
-      expect(results.total_answers).toBe(3);
-      expect(results.leaderboard).toHaveLength(2);
+      expect(results.session).toMatchObject({
+        id: "s1",
+        quizTitle: "Mon quiz",
+        participantCount: 2,
+      });
+      expect(results.summary.accuracy).toBe(0.5);
+      expect(results.perQuestion[0].answerDistribution).toEqual({ A: 1, B: 0 });
+      expect(results.perParticipant.map((p) => p.participantId)).toEqual([
+        "p1",
+        "p2",
+      ]);
+      // Les questions sont lues pour le quiz de la session
+      expect(supabase.queriesFor("questions")[0].calls).toContainEqual({
+        method: "eq",
+        args: ["quiz_id", "quiz1"],
+      });
     });
 
     it("renvoie 404 à un autre utilisateur, sans lire participants ni réponses", async () => {
@@ -113,6 +157,50 @@ describe("SessionService : contrôle de propriété", () => {
         service.getSessionResults("s1", OTHER),
       ).rejects.toBeInstanceOf(NotFoundException);
       expect(supabase.queriesFor("participants")).toHaveLength(0);
+      expect(supabase.queriesFor("participant_answers")).toHaveLength(0);
+      expect(supabase.queriesFor("questions")).toHaveLength(0);
+    });
+
+    it("renvoie 404 si la session n'existe pas", async () => {
+      supabase.mockResponse("sessions", {
+        data: null,
+        error: { message: "x" },
+      });
+      await expect(
+        service.getSessionResults("absente", OWNER),
+      ).rejects.toBeInstanceOf(NotFoundException);
+    });
+
+    it("propage une erreur de lecture Supabase", async () => {
+      supabase
+        .mockResponse("sessions", { data: session })
+        .mockResponse("participant_answers", {
+          error: { message: "boom" },
+        });
+      await expect(service.getSessionResults("s1", OWNER)).rejects.toThrow(
+        "boom",
+      );
+    });
+  });
+
+  describe("getSessionResultsCsv", () => {
+    it("renvoie le CSV (avec BOM) et un nom de fichier au créateur", async () => {
+      supabase
+        .mockResponse("sessions", { data: session })
+        .mockResponse("participants", { data: participants });
+
+      const { filename, csv } = await service.getSessionResultsCsv("s1", OWNER);
+      expect(filename).toBe("resultats-mon-quiz.csv");
+      expect(csv.startsWith("﻿Rang;Pseudo;")).toBe(true);
+      expect(csv).toContain("1;Alice;300;");
+    });
+
+    it("renvoie 404 à un autre utilisateur, sans lire les réponses", async () => {
+      supabase.mockResponse("sessions", { data: session });
+
+      await expect(
+        service.getSessionResultsCsv("s1", OTHER),
+      ).rejects.toBeInstanceOf(NotFoundException);
       expect(supabase.queriesFor("participant_answers")).toHaveLength(0);
     });
   });
