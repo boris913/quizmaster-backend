@@ -163,7 +163,7 @@ src/
 | GET | `/api/sessions/:id/leaderboard` | JWT | Classement |
 | GET | `/api/sessions/:id/results` | JWT | Résultats finaux |
 | POST | `/api/sessions/join` | Public | Rejoindre (pseudo + password) |
-| DELETE | `/api/sessions/:id` | JWT | Terminer session |
+| DELETE | `/api/sessions/:id` | JWT | Supprimer la session et ses données (participants, réponses) |
 
 ---
 
@@ -337,7 +337,7 @@ A,B
    - `SUPABASE_URL`
    - `SUPABASE_SERVICE_ROLE_KEY`
    - `JWT_SECRET`
-   - `FRONTEND_URL`
+   - `CORS_ORIGINS` (origine(s) du frontend, séparées par des virgules)
    - `PORT=3001`
 4. Build command : `npm run build`
 5. Start command : `npm run start:prod`
