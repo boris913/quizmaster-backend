@@ -18,6 +18,7 @@ import {
   SessionResults,
 } from "./results/session-results";
 import { buildResultsCsv, resultsCsvFilename } from "./results/results-csv";
+import { fetchAllRows } from "./results/fetch-all-rows";
 
 @Injectable()
 export class SessionService {
@@ -315,37 +316,48 @@ export class SessionService {
     // Contrôle de propriété avant toute autre lecture
     const session = await this.getSessionByCreator(sessionId, creatorId);
 
-    const [questionsRes, participantsRes, answersRes] = await Promise.all([
+    const [questionsRes, participants, answers] = await Promise.all([
       this.supabase
         .from("questions")
         .select("id, order_index, text, type, options, correct_answers")
         .eq("quiz_id", session.quiz_id)
         .order("order_index", { ascending: true }),
-      // Tous les participants, y compris déconnectés : ils ont joué
-      this.supabase
-        .from("participants")
-        .select("id, pseudo, score")
-        .eq("session_id", sessionId)
-        .order("score", { ascending: false }),
-      this.supabase
-        .from("participant_answers")
-        .select(
-          "participant_id, question_id, answers, status, is_correct, time_taken_ms",
-        )
-        .eq("session_id", sessionId),
-    ]);
+      // Tous les participants, y compris déconnectés : ils ont joué.
+      // Lecture paginée (ordre stable : score puis id).
+      fetchAllRows<ResultsParticipantRow>((from, to) =>
+        this.supabase
+          .from("participants")
+          .select("id, pseudo, score")
+          .eq("session_id", sessionId)
+          .order("score", { ascending: false })
+          .order("id", { ascending: true })
+          .range(from, to),
+      ),
+      // Lecture paginée : une classe dépasse vite la limite de 1000 lignes
+      fetchAllRows<ResultsAnswerRow>((from, to) =>
+        this.supabase
+          .from("participant_answers")
+          .select(
+            "participant_id, question_id, answers, status, is_correct, time_taken_ms",
+          )
+          .eq("session_id", sessionId)
+          .order("id", { ascending: true })
+          .range(from, to),
+      ),
+    ]).catch((err: Error) => {
+      throw new Error(`Erreur lecture résultats: ${err.message}`);
+    });
 
-    for (const res of [questionsRes, participantsRes, answersRes]) {
-      if (res.error) {
-        throw new Error(`Erreur lecture résultats: ${res.error.message}`);
-      }
+    if (questionsRes.error) {
+      throw new Error(
+        `Erreur lecture résultats: ${questionsRes.error.message}`,
+      );
     }
 
-    const answers = (answersRes.data ?? []) as ResultsAnswerRow[];
     const results = buildSessionResults({
       session,
       questions: (questionsRes.data ?? []) as ResultsQuestionRow[],
-      participants: (participantsRes.data ?? []) as ResultsParticipantRow[],
+      participants,
       answers,
     });
 

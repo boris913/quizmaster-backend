@@ -210,6 +210,9 @@ Règles de calcul :
 - `avgScore` : moyenne des scores des participants (2 décimales).
 - `perParticipant` est trié par score décroissant et inclut les participants
   déconnectés.
+- Participants et réponses sont lus par pages de 1000 lignes (`.range()`,
+  ordre stable par `id`) : la limite `max-rows` de Supabase ne tronque pas le
+  rapport d'une grande classe.
 
 `GET /api/sessions/:id/results.csv` : fichier `text/csv; charset=utf-8`
 téléchargé en pièce jointe (`Content-Disposition: attachment;

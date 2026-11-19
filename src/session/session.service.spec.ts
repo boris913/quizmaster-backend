@@ -150,6 +150,73 @@ describe("SessionService : contrôle de propriété", () => {
       });
     });
 
+    it("agrège plus de 1000 réponses lues sur plusieurs pages", async () => {
+      // 35 élèves × 30 questions = 1050 lignes : au-delà de la limite PostgREST
+      const questions = Array.from({ length: 30 }, (_, i) => ({
+        id: `q${i}`,
+        order_index: i,
+        text: `Question ${i}`,
+        type: "single",
+        options: [{ id: "A" }, { id: "B" }],
+        correct_answers: ["A"],
+      }));
+      const students = Array.from({ length: 35 }, (_, i) => ({
+        id: `p${i}`,
+        pseudo: `Élève ${i}`,
+        score: 0,
+      }));
+      const rows = students.flatMap((p) =>
+        questions.map((q) => ({
+          participant_id: p.id,
+          question_id: q.id,
+          answers: ["A"],
+          status: "answered",
+          is_correct: true,
+          time_taken_ms: 1000,
+        })),
+      );
+      expect(rows).toHaveLength(1050);
+
+      supabase
+        .mockResponse("sessions", { data: session })
+        .mockResponse("questions", { data: questions })
+        .mockResponse("participants", { data: students })
+        .mockResponse("participant_answers", { data: rows.slice(0, 1000) })
+        .mockResponse("participant_answers", { data: rows.slice(1000) });
+
+      const results = await service.getSessionResults("s1", OWNER);
+
+      const pages = supabase.queriesFor("participant_answers");
+      expect(pages).toHaveLength(2);
+      expect(
+        pages.map((q) => q.calls.find((c) => c.method === "range")),
+      ).toEqual([
+        { method: "range", args: [0, 999] },
+        { method: "range", args: [1000, 1999] },
+      ]);
+      expect(pages[0].calls).toContainEqual({
+        method: "order",
+        args: ["id", { ascending: true }],
+      });
+
+      const answered = results.perParticipant.reduce(
+        (sum, p) => sum + p.answered,
+        0,
+      );
+      expect(answered).toBe(1050);
+      // Les 50 dernières lignes (page 2) concernent les derniers élèves
+      expect(
+        results.perParticipant[results.perParticipant.length - 1],
+      ).toMatchObject({
+        participantId: "p34",
+        answered: 30,
+      });
+      expect(results.summary.completionRate).toBe(1);
+      expect(
+        results.perQuestion.every((q) => q.answerDistribution.A === 35),
+      ).toBe(true);
+    });
+
     it("renvoie 404 à un autre utilisateur, sans lire participants ni réponses", async () => {
       supabase.mockResponse("sessions", { data: session });
 
