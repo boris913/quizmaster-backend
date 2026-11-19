@@ -343,12 +343,16 @@ export class SessionService {
     return data;
   }
 
-  async setCurrentQuestion(sessionId: string, questionIndex: number) {
+  async setCurrentQuestion(
+    sessionId: string,
+    questionIndex: number,
+    startedAt: Date = new Date(),
+  ) {
     const { data, error } = await this.supabase
       .from("sessions")
       .update({
         current_question_index: questionIndex,
-        question_start_time: new Date().toISOString(),
+        question_start_time: startedAt.toISOString(),
         status: "active",
       })
       .eq("id", sessionId)
