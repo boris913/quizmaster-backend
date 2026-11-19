@@ -18,6 +18,21 @@ import {
 /** Nombre maximal de tirages pour obtenir un code de session unique. */
 export const MAX_SESSION_CODE_ATTEMPTS = 10;
 
+/**
+ * Violation d'unicité Postgres (23505) portant sur le code de session
+ * (contrainte `sessions_password_key`).
+ */
+function isSessionCodeConflict(error: {
+  code?: string;
+  message?: string;
+  details?: string;
+}): boolean {
+  return (
+    error.code === "23505" &&
+    /password/i.test(`${error.message ?? ""} ${error.details ?? ""}`)
+  );
+}
+
 @Injectable()
 export class SessionService {
   constructor(@Inject(SUPABASE_CLIENT) private supabase: SupabaseClient) {}
@@ -42,41 +57,37 @@ export class SessionService {
       throw new BadRequestException("Le quiz doit avoir au moins une question");
     }
 
-    // Générer un code unique parmi les sessions joignables
-    let password: string | null = null;
+    // `sessions.password` est UNIQUE sur toute la table (sessions terminées
+    // comprises) : on tente l'insertion et on retire un code en cas de
+    // collision, dans la limite de MAX_SESSION_CODE_ATTEMPTS.
+    // Même type que l'ancien insert direct (client Supabase non typé).
+    let session: any = null;
     for (let attempt = 0; attempt < MAX_SESSION_CODE_ATTEMPTS; attempt++) {
-      const candidate = generateSessionPassword();
-      const { data: existing } = await this.supabase
+      const { data, error } = await this.supabase
         .from("sessions")
-        .select("id")
-        .eq("password", candidate)
-        .in("status", ["waiting", "active", "paused"])
-        .limit(1)
-        .maybeSingle();
-      if (!existing) {
-        password = candidate;
+        .insert({
+          quiz_id: dto.quiz_id,
+          creator_id: creatorId,
+          password: generateSessionPassword(),
+          status: "waiting",
+          current_question_index: -1,
+        })
+        .select()
+        .single();
+
+      if (!error) {
+        session = data;
         break;
       }
+      if (!isSessionCodeConflict(error)) {
+        throw new Error(`Erreur création session: ${error.message}`);
+      }
     }
-    if (!password) {
+    if (!session) {
       throw new ServiceUnavailableException(
         "Impossible de générer un code de session unique, veuillez réessayer.",
       );
     }
-
-    const { data: session, error } = await this.supabase
-      .from("sessions")
-      .insert({
-        quiz_id: dto.quiz_id,
-        creator_id: creatorId,
-        password,
-        status: "waiting",
-        current_question_index: -1,
-      })
-      .select()
-      .single();
-
-    if (error) throw new Error(`Erreur création session: ${error.message}`);
 
     return {
       ...session,

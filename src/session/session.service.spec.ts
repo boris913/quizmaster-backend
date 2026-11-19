@@ -159,60 +159,81 @@ describe("SessionService : contrôle de propriété", () => {
       total_questions: 3,
       title: "Mon quiz",
     };
-    const codeOf = (q: { calls: { method: string; args: unknown[] }[] }) =>
-      q.calls.find((c) => c.method === "eq" && c.args[0] === "password")
-        ?.args[1];
+    const conflict = {
+      code: "23505",
+      message:
+        'duplicate key value violates unique constraint "sessions_password_key"',
+      details: "Key (password)=(ABC234) already exists.",
+    };
+    const insertedCode = (q: {
+      calls: { method: string; args: unknown[] }[];
+    }) =>
+      (
+        q.calls.find((c) => c.method === "insert")?.args[0] as {
+          password: string;
+        }
+      ).password;
 
-    it("retire un nouveau code tant qu'il est déjà utilisé", async () => {
+    it("retire un code s'il correspond à une session existante, même terminée", async () => {
       supabase
         .mockResponse("quizzes", { data: quiz })
-        .mockResponse("sessions", { data: { id: "existing1" } })
-        .mockResponse("sessions", { data: { id: "existing2" } })
-        .mockResponse("sessions", { data: null })
-        .mockResponse("sessions", { data: { id: "s-new" } });
+        .mockResponse("sessions", { error: conflict })
+        .mockResponse("sessions", { data: { id: "s-new", status: "waiting" } });
 
       const created = await service.createSession(OWNER, { quiz_id: "quiz1" });
 
-      const sessionQueries = supabase.queriesFor("sessions");
-      // 3 vérifications d'unicité + 1 insertion
-      expect(sessionQueries).toHaveLength(4);
-      const insert = sessionQueries[3].calls.find((c) => c.method === "insert");
-      const inserted = insert?.args[0] as { password: string };
-      expect(inserted.password).toBe(codeOf(sessionQueries[2]));
-      expect(inserted.password).toMatch(/^[ABCDEFGHJKMNPQRSTUVWXYZ2-9]{6}$/);
+      const inserts = supabase.queriesFor("sessions");
+      expect(inserts).toHaveLength(2);
+      for (const q of inserts) {
+        expect(insertedCode(q)).toMatch(/^[ABCDEFGHJKMNPQRSTUVWXYZ2-9]{6}$/);
+      }
       expect(created.id).toBe("s-new");
+      expect(created.quiz_title).toBe("Mon quiz");
     });
 
-    it("vérifie l'unicité parmi toutes les sessions joignables", async () => {
-      supabase
-        .mockResponse("quizzes", { data: quiz })
-        .mockResponse("sessions", { data: null })
-        .mockResponse("sessions", { data: { id: "s-new" } });
-
-      await service.createSession(OWNER, { quiz_id: "quiz1" });
-
-      const check = supabase.queriesFor("sessions")[0];
-      expect(check.calls).toContainEqual({
-        method: "in",
-        args: ["status", ["waiting", "active", "paused"]],
-      });
-    });
-
-    it("lève une erreur explicite après le nombre maximal de tentatives, sans insérer", async () => {
+    it("lève une erreur 503 explicite après le nombre maximal de tentatives", async () => {
       supabase.mockResponse("quizzes", { data: quiz });
       for (let i = 0; i < MAX_SESSION_CODE_ATTEMPTS; i++) {
-        supabase.mockResponse("sessions", { data: { id: `existing${i}` } });
+        supabase.mockResponse("sessions", { error: conflict });
       }
 
       await expect(
         service.createSession(OWNER, { quiz_id: "quiz1" }),
       ).rejects.toBeInstanceOf(ServiceUnavailableException);
+      expect(supabase.queriesFor("sessions")).toHaveLength(
+        MAX_SESSION_CODE_ATTEMPTS,
+      );
+    });
 
-      const sessionQueries = supabase.queriesFor("sessions");
-      expect(sessionQueries).toHaveLength(MAX_SESSION_CODE_ATTEMPTS);
-      expect(
-        sessionQueries.some((q) => q.calls.some((c) => c.method === "insert")),
-      ).toBe(false);
+    it("ne réessaie pas une autre erreur d'insertion", async () => {
+      supabase
+        .mockResponse("quizzes", { data: quiz })
+        .mockResponse("sessions", {
+          error: { code: "23503", message: "foreign key violation" },
+        });
+
+      await expect(
+        service.createSession(OWNER, { quiz_id: "quiz1" }),
+      ).rejects.toThrow("Erreur création session: foreign key violation");
+      expect(supabase.queriesFor("sessions")).toHaveLength(1);
+    });
+
+    it("ne réessaie pas une violation d'unicité portant sur une autre contrainte", async () => {
+      supabase
+        .mockResponse("quizzes", { data: quiz })
+        .mockResponse("sessions", {
+          error: {
+            code: "23505",
+            message:
+              'duplicate key value violates unique constraint "sessions_pkey"',
+            details: "Key (id)=(s1) already exists.",
+          },
+        });
+
+      await expect(
+        service.createSession(OWNER, { quiz_id: "quiz1" }),
+      ).rejects.toThrow(/Erreur création session/);
+      expect(supabase.queriesFor("sessions")).toHaveLength(1);
     });
   });
 
