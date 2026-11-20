@@ -1,4 +1,10 @@
-import { Injectable, Inject, BadRequestException } from "@nestjs/common";
+import {
+  Injectable,
+  Inject,
+  BadRequestException,
+  ConflictException,
+  Logger,
+} from "@nestjs/common";
 import { SupabaseClient } from "@supabase/supabase-js";
 import { SUPABASE_CLIENT } from "../database/database.module";
 import {
@@ -55,6 +61,14 @@ function joinedQuestionType(row: { questions?: unknown }): string | null {
     : row.questions;
   return typeof q?.type === "string" ? q.type : null;
 }
+
+/**
+ * Réponse live arrivée alors qu'une ligne existe déjà pour ce participant et
+ * cette question (typiquement le timeout inséré à la clôture, course
+ * réponse/timeout). Le gateway la traduit en "answer:too_late".
+ */
+export const ANSWER_ALREADY_RECORDED =
+  "Une réponse est déjà enregistrée pour cette question";
 
 export interface SubmitAnswerParams {
   participantId: string;
@@ -114,6 +128,8 @@ export interface QuestionStats {
 
 @Injectable()
 export class ParticipantService {
+  private readonly logger = new Logger(ParticipantService.name);
+
   constructor(@Inject(SUPABASE_CLIENT) private supabase: SupabaseClient) {}
 
   /**
@@ -219,6 +235,12 @@ export class ParticipantService {
       });
 
     if (answerError) {
+      // Index unique (participant_id, question_id), migration 006 : une ligne
+      // (le timeout de la clôture) a été insérée entre la vérification
+      // ci-dessus et cette insertion. Aucun point n'est compté.
+      if (answerError.code === "23505") {
+        throw new ConflictException(ANSWER_ALREADY_RECORDED);
+      }
       throw new Error(`Erreur enregistrement réponse: ${answerError.message}`);
     }
 
@@ -287,7 +309,7 @@ export class ParticipantService {
       status: "timeout",
     }));
 
-    await this.supabase.from("participant_answers").insert(timeoutRecords);
+    await this.insertTimeoutRecords(sessionId, questionId, timeoutRecords);
 
     // Remettre les participants en état "waiting"
     const timedOutIds = timedOutParticipants.map((p) => p.id);
@@ -295,6 +317,40 @@ export class ParticipantService {
       .from("participants")
       .update({ status: "waiting" })
       .in("id", timedOutIds);
+  }
+
+  /**
+   * Insère les lignes "timeout" sans échouer sur une réponse arrivée entre la
+   * lecture des réponses et l'insertion (course réponse/timeout) : upsert
+   * qui ignore les doublons sur l'index unique (participant_id, question_id)
+   * de la migration 006. Si l'index est absent (base avec doublons
+   * historiques, voir la migration), repli sur une insertion simple.
+   * N'interrompt jamais la clôture : une erreur est journalisée.
+   */
+  private async insertTimeoutRecords(
+    sessionId: string,
+    questionId: string,
+    records: Record<string, unknown>[],
+  ): Promise<void> {
+    let { error } = await this.supabase
+      .from("participant_answers")
+      .upsert(records, {
+        onConflict: "participant_id,question_id",
+        ignoreDuplicates: true,
+      });
+
+    // 42P10 : aucune contrainte unique ne correspond à ON CONFLICT
+    if (error?.code === "42P10") {
+      ({ error } = await this.supabase
+        .from("participant_answers")
+        .insert(records));
+    }
+
+    if (error) {
+      this.logger.error(
+        `Timeouts non enregistrés (session ${sessionId}, question ${questionId}): ${error.message}`,
+      );
+    }
   }
 
   /**

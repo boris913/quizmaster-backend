@@ -1,6 +1,7 @@
 import {
   IsBoolean,
   IsIn,
+  IsISO8601,
   IsOptional,
   IsString,
   MinLength,
@@ -14,6 +15,20 @@ import {
   ScoringMode,
 } from "../../common/utils/scoring.util";
 import { NICKNAME_MODES, NicknameMode } from "../../common/utils/nickname.util";
+import {
+  SESSION_MODES,
+  SessionMode,
+  SHOW_EXPLANATIONS_MODES,
+  ShowExplanationsMode,
+} from "../../assignment/assignment.util";
+
+/**
+ * Règles de validation d'un pseudo (partagées par `POST /sessions/join` et
+ * `POST /assignments/:code/start`).
+ */
+export const PSEUDO_PATTERN = /^[\p{L}\p{N}_-]+(?: [\p{L}\p{N}_-]+)*$/u;
+export const PSEUDO_PATTERN_MESSAGE =
+  "Le pseudo ne peut contenir que des lettres, chiffres, tirets, underscores et espaces simples";
 
 export class CreateSessionDto {
   @IsString()
@@ -47,6 +62,54 @@ export class CreateSessionDto {
   @IsOptional()
   @IsBoolean({ message: "showLeaderboard doit être un booléen" })
   showLeaderboard?: boolean;
+
+  /**
+   * Mode de la session (issue #10) : "live" (défaut, partie pilotée en
+   * direct) ou "async" (devoir, chaque élève avance seul jusqu'à `dueAt`).
+   */
+  @IsOptional()
+  @IsIn(SESSION_MODES, { message: "mode doit valoir 'live' ou 'async'" })
+  mode?: SessionMode;
+
+  /**
+   * Échéance du devoir (ISO 8601 avec fuseau, ex. "2026-12-01T18:00:00Z").
+   * Obligatoire en mode "async", interdite en mode "live". Doit être dans le
+   * futur et à 365 jours au plus.
+   */
+  @IsOptional()
+  @IsISO8601(
+    { strict: true },
+    { message: "dueAt doit être une date ISO 8601 (ex. 2026-12-01T18:00:00Z)" },
+  )
+  dueAt?: string;
+
+  /**
+   * Devoir uniquement (issue #10) : "each" (défaut) révèle le verdict et
+   * l'explication après chaque réponse, "end" à la fin du devoir de l'élève.
+   */
+  @IsOptional()
+  @IsIn(SHOW_EXPLANATIONS_MODES, {
+    message: "showExplanations doit valoir 'each' ou 'end'",
+  })
+  showExplanations?: ShowExplanationsMode;
+}
+
+/**
+ * PATCH /api/sessions/:id (devoir uniquement, issue #10) : prolonger
+ * l'échéance (`dueAt`) ou clore le devoir (`status: "finished"`), l'un ou
+ * l'autre.
+ */
+export class UpdateSessionDto {
+  @IsOptional()
+  @IsISO8601(
+    { strict: true },
+    { message: "dueAt doit être une date ISO 8601 (ex. 2026-12-01T18:00:00Z)" },
+  )
+  dueAt?: string;
+
+  @IsOptional()
+  @IsIn(["finished"], { message: "status ne peut valoir que 'finished'" })
+  status?: "finished";
 }
 
 export class JoinSessionDto {
@@ -64,10 +127,7 @@ export class JoinSessionDto {
   @MaxLength(50, { message: "Le pseudo ne peut pas dépasser 50 caractères" })
   // Lettres (accents compris), chiffres, tirets, underscores et espaces
   // simples entre les mots (pseudos générés : « Loutre Curieuse »).
-  @Matches(/^[\p{L}\p{N}_-]+(?: [\p{L}\p{N}_-]+)*$/u, {
-    message:
-      "Le pseudo ne peut contenir que des lettres, chiffres, tirets, underscores et espaces simples",
-  })
+  @Matches(PSEUDO_PATTERN, { message: PSEUDO_PATTERN_MESSAGE })
   pseudo: string;
 }
 

@@ -24,7 +24,8 @@ async function bootstrap() {
     origin: corsOriginCallback,
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
+    // X-Resume-Token : jeton de reprise des devoirs (issue #10)
+    allowedHeaders: ["Content-Type", "Authorization", "X-Resume-Token"],
   });
 
   // Validation globale des DTOs

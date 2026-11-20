@@ -56,6 +56,12 @@ export interface Session {
   scoring_mode: "speed" | "accuracy";
   /** Classement visible par les joueurs (issue #8, migration 004). */
   show_leaderboard: boolean;
+  /** "live" (partie en direct) ou "async" (devoir), migration 006 (issue #10). */
+  mode: "live" | "async";
+  /** Échéance d'un devoir (ISO 8601), null pour une session live. */
+  due_at: string | null;
+  /** Devoir : verdict révélé après chaque réponse ("each") ou à la fin ("end"). */
+  show_explanations: "each" | "end";
   question_start_time?: string;
   started_at?: string;
   ended_at?: string;
@@ -78,6 +84,12 @@ export interface Participant {
     | "kicked";
   socket_id?: string;
   joined_at: string;
+  /** Devoir (migration 006) : heure serveur d'envoi de la question en cours. */
+  question_sent_at?: string | null;
+  /** Devoir : position de la question en cours dans l'ordre de l'élève. */
+  current_index?: number;
+  /** Devoir : empreinte SHA-256 du jeton de reprise (jamais le jeton). */
+  resume_token?: string | null;
 }
 
 export interface ParticipantAnswer {
@@ -329,4 +341,102 @@ export interface WsParticipantProgressPayload {
   questions_answered: number;
   total_questions: number;
   progress_percentage: number;
+}
+
+// ============================================================
+// MODE DEVOIR ASYNCHRONE (issue #10) — /api/assignments/:code/*
+// ============================================================
+
+/** Informations publiques d'un devoir. */
+export interface AssignmentInfo {
+  title: string;
+  totalQuestions: number;
+  /** Échéance, ISO 8601 UTC. */
+  dueAt: string;
+  scoringMode: "speed" | "accuracy";
+  showExplanations: "each" | "end";
+}
+
+/** Réponse de POST /api/assignments/:code/start. */
+export interface AssignmentStartResponse {
+  participantId: string;
+  pseudo: string;
+  /** Secret à renvoyer dans l'en-tête X-Resume-Token (remis une seule fois). */
+  resumeToken: string;
+  assignment: AssignmentInfo;
+}
+
+/** Question telle qu'envoyée à l'élève (sans bonne réponse ni explication). */
+export interface AssignmentPublicQuestion {
+  id: string;
+  text: string;
+  type: string;
+  options: Array<{ id: string; text: string }>;
+  imageUrl: string | null;
+  maxPoints: number;
+  timerSeconds: number;
+}
+
+/** GET /api/assignments/:code/next — une question à traiter. */
+export interface AssignmentNextResponse {
+  done: false;
+  assignment: AssignmentInfo;
+  /** Position (1-based) dans l'ordre propre à l'élève. */
+  position: number;
+  total: number;
+  answeredCount: number;
+  question: AssignmentPublicQuestion;
+  /** Heure serveur d'envoi de la question (ISO 8601), fixée une seule fois. */
+  sentAt: string;
+  /** Temps restant au moment de la réponse HTTP (ms). */
+  timeRemainingMs: number;
+  /** Score courant, null si showExplanations = "end". */
+  score: number | null;
+}
+
+export interface AssignmentReviewItem {
+  position: number;
+  question: AssignmentPublicQuestion;
+  yourAnswers: string[];
+  status: "answered" | "timeout";
+  isCorrect: boolean;
+  pointsEarned: number;
+  timeTakenMs: number | null;
+  correctAnswers: string[];
+  explanation: string | null;
+}
+
+/** GET /api/assignments/:code/next — devoir terminé par l'élève. */
+export interface AssignmentDoneResponse {
+  done: true;
+  assignment: AssignmentInfo;
+  total: number;
+  score: number;
+  maxScore: number;
+  correctCount: number;
+  review: AssignmentReviewItem[];
+}
+
+/** Réponse de POST /api/assignments/:code/answer. */
+export interface AssignmentAnswerResponse {
+  questionId: string;
+  /** "timeout" si la réponse est arrivée après le chrono (0 point). */
+  status: "answered" | "timeout";
+  /** Vrai si une réponse existait déjà : la nouvelle a été ignorée. */
+  alreadyAnswered: boolean;
+  /** Temps mesuré par le serveur (ms), null pour un timeout. */
+  timeTakenMs: number | null;
+  answeredCount: number;
+  total: number;
+  /** Vrai si l'élève a traité toutes les questions (bilan via /next). */
+  finished: boolean;
+  /** Verdict, null si showExplanations = "end" (révélé dans le bilan). */
+  result: {
+    isCorrect: boolean;
+    pointsEarned: number;
+    maxPoints: number;
+    correctAnswers: string[];
+    explanation: string | null;
+    totalScore: number;
+  } | null;
 }

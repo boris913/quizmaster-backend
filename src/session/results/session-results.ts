@@ -43,6 +43,9 @@ export interface ResultsSessionRow {
   status: string;
   started_at: string | null;
   ended_at: string | null;
+  /** Migration 006 (issue #10) ; absent = session live. */
+  mode?: string | null;
+  due_at?: string | null;
   quizzes?: { title?: string | null } | null;
 }
 
@@ -81,6 +84,10 @@ export interface SessionResults {
     status: string;
     startedAt: string | null;
     endedAt: string | null;
+    /** "live" ou "async" (devoir, issue #10). */
+    mode: "live" | "async";
+    /** Échéance du devoir, null pour une session live. */
+    dueAt: string | null;
     participantCount: number;
   };
   summary: { accuracy: number; avgScore: number; completionRate: number };
@@ -203,6 +210,8 @@ export function buildSessionResults(input: {
       status: input.session.status,
       startedAt: input.session.started_at ?? null,
       endedAt: input.session.ended_at ?? null,
+      mode: input.session.mode === "async" ? "async" : "live",
+      dueAt: input.session.due_at ?? null,
       participantCount: participants.length,
     },
     summary: {

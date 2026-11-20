@@ -3,6 +3,7 @@ import {
   Post,
   Get,
   Delete,
+  Patch,
   Body,
   Param,
   Query,
@@ -15,6 +16,7 @@ import {
   CreateSessionDto,
   JoinSessionDto,
   NicknameSuggestionsQueryDto,
+  UpdateSessionDto,
 } from "./dto/session.dto";
 import { JwtAuthGuard } from "../common/guards/jwt-auth.guard";
 import {
@@ -136,6 +138,20 @@ export class SessionController {
   @Post("join")
   joinSession(@Body() dto: JoinSessionDto) {
     return this.sessionService.joinSession(dto);
+  }
+
+  /**
+   * PATCH /api/sessions/:id (issue #10, devoir uniquement)
+   * Body : `{ dueAt }` pour prolonger l'échéance, ou `{ status: "finished" }`
+   * pour clore le devoir. Créateur seulement (404 sinon).
+   */
+  @Patch(":id")
+  updateSession(
+    @Param("id") id: string,
+    @Body() dto: UpdateSessionDto,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.sessionService.updateSession(id, user.sub, dto);
   }
 
   /**

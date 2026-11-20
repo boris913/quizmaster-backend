@@ -14,8 +14,14 @@ import { JwtService } from "@nestjs/jwt";
 import { ConfigService } from "@nestjs/config";
 import { SupabaseClient } from "@supabase/supabase-js";
 import { SUPABASE_CLIENT } from "../database/database.module";
-import { SessionService } from "../session/session.service";
-import { ParticipantService } from "../participant/participant.service";
+import {
+  ASYNC_LIVE_FORBIDDEN,
+  SessionService,
+} from "../session/session.service";
+import {
+  ANSWER_ALREADY_RECORDED,
+  ParticipantService,
+} from "../participant/participant.service";
 import { corsOriginCallback } from "../common/utils/cors.util";
 import { NICKNAME_ERRORS } from "../common/utils/nickname.util";
 import {
@@ -262,7 +268,12 @@ export class QuizGateway implements OnGatewayConnection, OnGatewayDisconnect {
         client.disconnect(true);
         return;
       }
-      client.emit("error", { message: error.message });
+      client.emit(
+        "error",
+        error.message === ASYNC_LIVE_FORBIDDEN
+          ? { message: error.message, mode: "async" }
+          : { message: error.message },
+      );
     }
   }
 
@@ -291,12 +302,19 @@ export class QuizGateway implements OnGatewayConnection, OnGatewayDisconnect {
       // Vérifier que le créateur est bien propriétaire de la session
       const { data: session } = await this.supabase
         .from("sessions")
-        .select("creator_id, status")
+        .select("creator_id, status, mode")
         .eq("id", sessionId)
         .single();
 
       if (!session || session.creator_id !== decoded.sub) {
         throw new WsException("Accès refusé");
+      }
+
+      // Un devoir (issue #10) ne se pilote pas en direct : sans "creator:join",
+      // aucun événement de pilotage (question:start, quiz:end…) n'est accepté.
+      if (session.mode === "async") {
+        client.emit("error", { message: ASYNC_LIVE_FORBIDDEN, mode: "async" });
+        return;
       }
 
       // Rejoindre la room créateur ET la room de la session
@@ -355,6 +373,10 @@ export class QuizGateway implements OnGatewayConnection, OnGatewayDisconnect {
       // Récupérer la session et la question
       const sessionDetails =
         await this.sessionService.getSessionWithDetails(sessionId);
+      // Défense en profondeur : un devoir ne se pilote pas en direct (#10)
+      if (sessionDetails.mode === "async") {
+        throw new WsException(ASYNC_LIVE_FORBIDDEN);
+      }
       const quiz = sessionDetails.quizzes;
 
       const { data: questions } = await this.supabase
@@ -454,7 +476,12 @@ export class QuizGateway implements OnGatewayConnection, OnGatewayDisconnect {
       );
     } catch (error) {
       this.logger.error(`Erreur question:start: ${error.message}`);
-      client.emit("error", { message: error.message });
+      client.emit(
+        "error",
+        error.message === ASYNC_LIVE_FORBIDDEN
+          ? { message: error.message, mode: "async" }
+          : { message: error.message },
+      );
     }
   }
 
@@ -606,6 +633,13 @@ export class QuizGateway implements OnGatewayConnection, OnGatewayDisconnect {
       // Tous les participants actifs ont répondu : clôture anticipée
       await this.closeQuestionIfAllAnswered(sessionId);
     } catch (error) {
+      // Course réponse/timeout : le timeout de la clôture est déjà enregistré
+      if (error.message === ANSWER_ALREADY_RECORDED) {
+        client.emit("answer:too_late", {
+          message: "Le temps est écoulé pour cette question",
+        });
+        return;
+      }
       this.logger.error(`Erreur answer:submit: ${error.message}`);
       client.emit("error", { message: error.message });
     }

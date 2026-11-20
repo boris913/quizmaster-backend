@@ -6,6 +6,7 @@ import { SessionModule } from "./session/session.module";
 import { ParticipantModule } from "./participant/participant.module";
 import { DatabaseModule } from "./database/database.module";
 import { GatewayModule } from "./gateway/gateway.module";
+import { AssignmentModule } from "./assignment/assignment.module";
 
 @Module({
   imports: [
@@ -19,6 +20,7 @@ import { GatewayModule } from "./gateway/gateway.module";
     SessionModule,
     ParticipantModule,
     GatewayModule,
+    AssignmentModule,
   ],
 })
 export class AppModule {}

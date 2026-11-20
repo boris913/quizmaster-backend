@@ -9,7 +9,12 @@ import {
 } from "@nestjs/common";
 import { SupabaseClient } from "@supabase/supabase-js";
 import { SUPABASE_CLIENT } from "../database/database.module";
-import { CreateSessionDto, JoinSessionDto } from "./dto/session.dto";
+import {
+  CreateSessionDto,
+  JoinSessionDto,
+  UpdateSessionDto,
+} from "./dto/session.dto";
+import { MAX_DUE_IN_DAYS } from "../assignment/assignment.util";
 import {
   generateSessionPassword,
   normalizeSessionCode,
@@ -28,6 +33,49 @@ import {
 } from "./results/session-results";
 import { buildResultsCsv, resultsCsvFilename } from "./results/results-csv";
 import { fetchAllRows } from "./results/fetch-all-rows";
+
+/** Message d'erreur : session devoir utilisée en direct (socket). */
+export const ASYNC_LIVE_FORBIDDEN =
+  "Cette session est un devoir : elle ne peut pas être jouée ni pilotée en direct.";
+
+/**
+ * Échéance d'un devoir : date ISO 8601 avec fuseau explicite, dans le futur
+ * et à `MAX_DUE_IN_DAYS` jours au plus. Renvoie la date normalisée (UTC).
+ */
+export function parseDueAt(value: string, nowMs: number = Date.now()): string {
+  if (
+    typeof value !== "string" ||
+    !/(Z|[+-]\d{2}:?\d{2})$/i.test(value.trim())
+  ) {
+    throw new BadRequestException(
+      "dueAt doit préciser un fuseau horaire (ex. 2026-12-01T18:00:00Z)",
+    );
+  }
+  const dueMs = new Date(value).getTime();
+  if (!Number.isFinite(dueMs)) {
+    throw new BadRequestException("dueAt n'est pas une date valide");
+  }
+  if (dueMs <= nowMs) {
+    throw new BadRequestException("dueAt doit être dans le futur");
+  }
+  if (dueMs > nowMs + MAX_DUE_IN_DAYS * 24 * 60 * 60 * 1000) {
+    throw new BadRequestException(
+      `dueAt ne peut pas dépasser ${MAX_DUE_IN_DAYS} jours`,
+    );
+  }
+  return new Date(dueMs).toISOString();
+}
+
+/** Erreur renvoyée quand un code de devoir est utilisé sur une route live. */
+function asyncSessionNotFound(): NotFoundException {
+  return new NotFoundException({
+    statusCode: 404,
+    error: "Not Found",
+    message:
+      "Ce code correspond à un devoir : ouvrez-le depuis la page du devoir.",
+    mode: "async",
+  });
+}
 
 /** Nombre maximal de tirages pour obtenir un code de session unique. */
 export const MAX_SESSION_CODE_ATTEMPTS = 10;
@@ -71,6 +119,26 @@ export class SessionService {
       throw new BadRequestException("Le quiz doit avoir au moins une question");
     }
 
+    // Mode devoir (issue #10) : échéance obligatoire ; la session est ouverte
+    // dès sa création (aucun pilotage en direct).
+    const mode = dto.mode ?? "live";
+    const modeFields: Record<string, unknown> = { mode };
+    if (mode === "async") {
+      if (!dto.dueAt) {
+        throw new BadRequestException("dueAt est obligatoire pour un devoir");
+      }
+      Object.assign(modeFields, {
+        due_at: parseDueAt(dto.dueAt),
+        show_explanations: dto.showExplanations ?? "each",
+        status: "active",
+        started_at: new Date().toISOString(),
+      });
+    } else if (dto.dueAt !== undefined || dto.showExplanations !== undefined) {
+      throw new BadRequestException(
+        "dueAt et showExplanations sont réservés au mode devoir (mode: 'async')",
+      );
+    }
+
     // `sessions.password` est UNIQUE sur toute la table (sessions terminées
     // comprises) : on tente l'insertion et on retire un code en cas de
     // collision, dans la limite de MAX_SESSION_CODE_ATTEMPTS.
@@ -88,6 +156,7 @@ export class SessionService {
           nickname_mode: dto.nicknameMode ?? "free",
           scoring_mode: dto.scoringMode ?? "speed",
           show_leaderboard: dto.showLeaderboard ?? true,
+          ...modeFields,
         })
         .select()
         .single();
@@ -147,7 +216,7 @@ export class SessionService {
       .from("sessions")
       .select(
         `
-        id, password, status, current_question_index, created_at, started_at, ended_at,
+        id, password, status, mode, due_at, current_question_index, created_at, started_at, ended_at,
         quizzes (id, title, total_questions)
       `,
       )
@@ -169,6 +238,59 @@ export class SessionService {
       .single();
 
     if (error) throw new Error(error.message);
+    return data;
+  }
+
+  /**
+   * PATCH /api/sessions/:id (issue #10) : prolonger l'échéance d'un devoir
+   * (`dueAt`, y compris un devoir échu non clôturé) ou le clore
+   * (`status: "finished"`). Réservé au créateur (404 sinon) et aux devoirs
+   * (400 pour une session live) ; un devoir clôturé ne peut plus être
+   * modifié (409).
+   */
+  async updateSession(
+    sessionId: string,
+    creatorId: string,
+    dto: UpdateSessionDto,
+  ) {
+    await this.assertCreatorSession(sessionId, creatorId);
+
+    const hasDueAt = dto.dueAt !== undefined;
+    const close = dto.status === "finished";
+    if (hasDueAt === close) {
+      throw new BadRequestException(
+        "Indiquez soit dueAt (prolonger), soit status: 'finished' (clore)",
+      );
+    }
+
+    const { data: session } = await this.supabase
+      .from("sessions")
+      .select("id, mode, status")
+      .eq("id", sessionId)
+      .single();
+    if (!session) throw new NotFoundException("Session introuvable");
+    if (session.mode !== "async") {
+      throw new BadRequestException(
+        "Seul un devoir (mode 'async') peut être modifié ainsi",
+      );
+    }
+    if (session.status === "finished") {
+      throw new ConflictException("Ce devoir est déjà clôturé");
+    }
+
+    const updates = close
+      ? { status: "finished", ended_at: new Date().toISOString() }
+      : { due_at: parseDueAt(dto.dueAt as string) };
+
+    const { data, error } = await this.supabase
+      .from("sessions")
+      .update(updates)
+      .eq("id", sessionId)
+      .eq("creator_id", creatorId)
+      .select()
+      .single();
+
+    if (error) throw new Error(`Erreur mise à jour session: ${error.message}`);
     return data;
   }
 
@@ -201,7 +323,7 @@ export class SessionService {
     const { data: session, error: sessionError } = await this.supabase
       .from("sessions")
       .select(
-        "id, status, quiz_id, scoring_mode, show_leaderboard, quizzes(title, total_questions)",
+        "id, status, mode, quiz_id, scoring_mode, show_leaderboard, quizzes(title, total_questions)",
       )
       .eq("password", normalizeSessionCode(dto.password))
       .in("status", ["waiting", "active", "paused"])
@@ -212,6 +334,8 @@ export class SessionService {
         "Session introuvable ou terminée. Vérifiez le mot de passe.",
       );
     }
+    // Un devoir ne se rejoint pas en direct (issue #10)
+    if (session.mode === "async") throw asyncSessionNotFound();
 
     await this.assertNicknameAcceptable(session.id, dto.pseudo);
 
@@ -336,6 +460,10 @@ export class SessionService {
     }
 
     const session = await this.getSessionWithDetails(sessionId);
+    // Un devoir ne se joue pas par socket (issue #10)
+    if (session.mode === "async") {
+      throw new ForbiddenException(ASYNC_LIVE_FORBIDDEN);
+    }
     const error = getNicknameError(participant.pseudo, session.nickname_mode);
     if (error) throw new BadRequestException(error);
 
@@ -392,6 +520,10 @@ export class SessionService {
       throw new ForbiddenException(NICKNAME_ERRORS.kicked);
     }
 
+    const session = await this.getSessionWithDetails(sessionId);
+    // La reprise d'un devoir passe par le jeton de reprise (issue #10)
+    if (session.mode === "async") throw asyncSessionNotFound();
+
     // Réactiver le participant s'il était déconnecté
     if (participant.status === "disconnected") {
       await this.supabase
@@ -399,8 +531,6 @@ export class SessionService {
         .update({ status: "waiting" })
         .eq("id", participantId);
     }
-
-    const session = await this.getSessionWithDetails(sessionId);
 
     return { participant, session };
   }
