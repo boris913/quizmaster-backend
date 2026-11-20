@@ -34,6 +34,27 @@ export interface AnswerResult {
   onPodium: boolean;
 }
 
+/** Données de la question nécessaires au calcul des statistiques. */
+export interface QuestionForStats {
+  id: string;
+  options: Array<{ id: string }>;
+  correct_answers: string[];
+}
+
+/** Statistiques d'une question clôturée (issue #6). */
+export interface QuestionStats {
+  questionId: string;
+  /** Nombre de participants ayant coché chaque option (0 pour une option non choisie). */
+  distribution: Record<string, number>;
+  correctAnswers: string[];
+  /** Pourcentage entier (0-100) de bonnes réponses parmi `totalParticipants`. */
+  accuracy: number;
+  answeredCount: number;
+  totalParticipants: number;
+  /** Réponse de chaque participant actif ayant répondu (pour "question:reveal"). */
+  answersByParticipant: Map<string, { answers: string[]; isCorrect: boolean }>;
+}
+
 @Injectable()
 export class ParticipantService {
   constructor(@Inject(SUPABASE_CLIENT) private supabase: SupabaseClient) {}
@@ -210,6 +231,107 @@ export class ParticipantService {
       .from("participants")
       .update({ status: "waiting" })
       .in("id", timedOutIds);
+  }
+
+  /**
+   * Nombre de participants actifs (ni "disconnected" ni "kicked") et nombre
+   * d'entre eux ayant déjà répondu à la question. Sert à clôturer la question
+   * dès que tout le monde a répondu.
+   */
+  async countActiveAnswers(
+    sessionId: string,
+    questionId: string,
+  ): Promise<{ answeredCount: number; totalParticipants: number }> {
+    const { data: participants } = await this.supabase
+      .from("participants")
+      .select("id")
+      .eq("session_id", sessionId)
+      .neq("status", "disconnected")
+      .neq("status", "kicked");
+
+    const { data: answers } = await this.supabase
+      .from("participant_answers")
+      .select("participant_id")
+      .eq("session_id", sessionId)
+      .eq("question_id", questionId);
+
+    const activeIds = new Set((participants || []).map((p) => p.id));
+    const answeredIds = new Set(
+      (answers || [])
+        .map((a) => a.participant_id)
+        .filter((id) => activeIds.has(id)),
+    );
+
+    return {
+      answeredCount: answeredIds.size,
+      totalParticipants: activeIds.size,
+    };
+  }
+
+  /**
+   * Statistiques de fin de question (issue #6), calculées depuis
+   * `participant_answers`. Seuls les participants actifs comptent : les
+   * réponses d'un participant "kicked" ou "disconnected" sont ignorées.
+   * Les lignes "timeout" (réponse vide) ne sont pas des réponses.
+   */
+  async computeQuestionStats(
+    sessionId: string,
+    question: QuestionForStats,
+  ): Promise<QuestionStats> {
+    const { data: participants } = await this.supabase
+      .from("participants")
+      .select("id")
+      .eq("session_id", sessionId)
+      .neq("status", "disconnected")
+      .neq("status", "kicked");
+
+    const { data: rows } = await this.supabase
+      .from("participant_answers")
+      .select("participant_id, answers, is_correct, status")
+      .eq("session_id", sessionId)
+      .eq("question_id", question.id);
+
+    const activeIds = new Set((participants || []).map((p) => p.id));
+    const optionIds = new Set((question.options || []).map((o) => o.id));
+
+    const distribution: Record<string, number> = {};
+    for (const id of optionIds) distribution[id] = 0;
+
+    const answersByParticipant = new Map<
+      string,
+      { answers: string[]; isCorrect: boolean }
+    >();
+    let correctCount = 0;
+
+    for (const row of rows || []) {
+      if (!activeIds.has(row.participant_id)) continue;
+      if (answersByParticipant.has(row.participant_id)) continue;
+      const answers: string[] = Array.isArray(row.answers) ? row.answers : [];
+      if (row.status === "timeout" || answers.length === 0) continue;
+
+      const isCorrect = row.is_correct === true;
+      answersByParticipant.set(row.participant_id, { answers, isCorrect });
+      if (isCorrect) correctCount++;
+
+      // Chaque option comptée une fois par participant
+      for (const optionId of new Set(answers)) {
+        if (optionIds.has(optionId)) distribution[optionId]++;
+      }
+    }
+
+    const totalParticipants = activeIds.size;
+    return {
+      questionId: question.id,
+      distribution,
+      correctAnswers: question.correct_answers || [],
+      accuracy:
+        totalParticipants > 0
+          ? Math.round((correctCount / totalParticipants) * 100)
+          : 0,
+      answeredCount: answersByParticipant.size,
+      totalParticipants,
+      answersByParticipant,
+    };
   }
 
   /**
