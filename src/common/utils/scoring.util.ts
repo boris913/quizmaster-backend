@@ -1,4 +1,5 @@
 import { randomInt } from "crypto";
+import { normalizeShortAnswer, QuestionType } from "./question-types.util";
 
 /** Modes de score d'une session (issue #8, migration 004). */
 export const SCORING_MODES = ["speed", "accuracy"] as const;
@@ -72,28 +73,67 @@ export function computeServerTimeTakenMs(
 }
 
 /**
- * Vérifie si la réponse d'un participant est correcte.
- * Supporte les questions à réponse unique et multiple.
+ * Vérifie si la réponse d'un participant est correcte, selon le type de la
+ * question (issue #7) :
+ * - `single`, `true_false` : exactement une réponse, égale à la bonne ;
+ * - `multiple` : exactement l'ensemble des bonnes réponses (ordre indifférent) ;
+ * - `ordering` : séquence exacte des ids, dans l'ordre (aucun tri) ;
+ * - `short_answer` : la réponse (premier élément, seul attendu) est égale à
+ *   l'une des variantes acceptées après `normalizeShortAnswer` (casse,
+ *   accents, espaces, ponctuation finale) ;
+ * - `poll` : jamais juste (0 point, non noté).
+ * Un type inconnu n'est jamais juste.
+ *
+ * Signature rétrocompatible : `type` accepte toujours `"single" | "multiple"`.
  */
 export function checkAnswer(
   submittedAnswers: string[],
   correctAnswers: string[],
-  type: "single" | "multiple",
+  type: QuestionType | "single" | "multiple",
 ): boolean {
-  if (!submittedAnswers || submittedAnswers.length === 0) return false;
+  if (!Array.isArray(submittedAnswers) || submittedAnswers.length === 0)
+    return false;
+  const correctList = Array.isArray(correctAnswers) ? correctAnswers : [];
 
-  const submitted = [...submittedAnswers].sort();
-  const correct = [...correctAnswers].sort();
+  switch (type) {
+    case "single":
+    case "true_false":
+      return (
+        submittedAnswers.length === 1 &&
+        correctList.length >= 1 &&
+        submittedAnswers[0] === [...correctList].sort()[0]
+      );
 
-  if (type === "single") {
-    return submitted.length === 1 && submitted[0] === correct[0];
+    case "multiple": {
+      const submitted = [...submittedAnswers].sort();
+      const correct = [...correctList].sort();
+      return (
+        correct.length > 0 &&
+        submitted.length === correct.length &&
+        submitted.every((a, i) => a === correct[i])
+      );
+    }
+
+    case "ordering":
+      return (
+        correctList.length > 0 &&
+        submittedAnswers.length === correctList.length &&
+        submittedAnswers.every((a, i) => a === correctList[i])
+      );
+
+    case "short_answer": {
+      if (submittedAnswers.length !== 1) return false;
+      const answer = normalizeShortAnswer(submittedAnswers[0]);
+      if (!answer) return false;
+      return correctList.some(
+        (variant) => normalizeShortAnswer(variant) === answer,
+      );
+    }
+
+    case "poll":
+    default:
+      return false;
   }
-
-  // Multiple: doit avoir exactement les bonnes réponses
-  return (
-    submitted.length === correct.length &&
-    submitted.every((a, i) => a === correct[i])
-  );
 }
 
 /**
