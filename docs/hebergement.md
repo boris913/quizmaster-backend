@@ -1,4 +1,4 @@
-# Hébergement et localisation des données — QuizMaster
+# Hébergement et localisation des données — Kwizora
 
 > **Avertissement.** Ce document n'est pas un avis juridique. Les régions
 > d'hébergement ci-dessous **n'ont pas été vérifiées** : elles doivent être
@@ -35,7 +35,7 @@
 
 | Élément | Où | Valeur attendue |
 |---|---|---|
-| `CORS_ORIGINS` | variables d'environnement du backend | URL(s) exacte(s) du frontend, séparées par des virgules, sans `/` final (ex. `https://quizmaster.example.fr`) |
+| `CORS_ORIGINS` | variables d'environnement du backend | URL(s) exacte(s) du frontend, séparées par des virgules, sans `/` final (ex. `https://kwizora.example.fr`) |
 | `SUPABASE_SERVICE_ROLE_KEY` | variables d'environnement du backend uniquement | jamais dans le frontend, jamais commitée |
 | Extension `pg_cron` | Supabase → Database → Extensions | activée, puis rejouer `migrations/002_retention_purge.sql` |
 | Job `quizmaster-anonymize-participants` | `SELECT * FROM cron.job;` | présent, planifié `15 3 * * *` (UTC) |

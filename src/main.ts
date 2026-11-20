@@ -41,7 +41,7 @@ async function bootstrap() {
 
   const port = process.env.PORT || 3001;
   await app.listen(port);
-  console.log(`🚀 QuizMaster Backend running on: http://localhost:${port}`);
+  console.log(`🚀 Kwizora Backend running on: http://localhost:${port}`);
   console.log(`🔌 WebSocket ready on: ws://localhost:${port}`);
 }
 bootstrap();
