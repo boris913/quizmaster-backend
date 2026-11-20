@@ -5,8 +5,11 @@ import {
   calculatePoints,
   checkAnswer,
   buildLeaderboard,
+  computeClassProgress,
   computeServerTimeTakenMs,
+  ScoringMode,
 } from "../common/utils/scoring.util";
+import { fetchAllRows } from "../session/results/fetch-all-rows";
 
 export interface SubmitAnswerParams {
   participantId: string;
@@ -104,7 +107,7 @@ export class ParticipantService {
     const { data: session } = await this.supabase
       .from("sessions")
       .select(
-        "question_start_time, quizzes (use_global_timer, global_timer_seconds)",
+        "question_start_time, scoring_mode, quizzes (use_global_timer, global_timer_seconds)",
       )
       .eq("id", sessionId)
       .single();
@@ -126,12 +129,16 @@ export class ParticipantService {
       : question.timer_seconds;
     const timerMs = timerSeconds * 1000;
 
-    // Calculer les points avec le temps mesuré par le serveur
+    // Calculer les points avec le temps mesuré par le serveur, selon le
+    // mode de score de la session (issue #8 ; "speed" si absent)
+    const scoringMode: ScoringMode =
+      session?.scoring_mode === "accuracy" ? "accuracy" : "speed";
     const pointsEarned = calculatePoints(
       isCorrect,
       serverTimeTaken,
       timerSeconds,
       question.max_points,
+      scoringMode,
     );
     // Valeur enregistrée bornée à la durée du timer (une réponse hors délai
     // vaut 0 point de toute façon)
@@ -371,6 +378,61 @@ export class ParticipantService {
         answered_current: answerMap.has(p.id),
       })),
     );
+  }
+
+  /**
+   * Score, bonnes réponses et précision de la classe pour le mode
+   * « classement masqué » (issue #8).
+   *
+   * `classAccuracy` = bonnes réponses / réponses attendues, en pourcentage
+   * entier 0-100, sur toutes les lignes `participant_answers` de la session
+   * (une par participant présent à la clôture de chaque question jouée :
+   * réponse donnée ou "timeout"). Les lignes des participants exclus
+   * ("kicked") sont ignorées. `correctCount` = nombre de lignes `is_correct`
+   * du participant.
+   */
+  async computeClassProgress(sessionId: string): Promise<{
+    classAccuracy: number;
+    participants: Map<string, { score: number; correctCount: number }>;
+  }> {
+    const { data: participants } = await this.supabase
+      .from("participants")
+      .select("id, score, status")
+      .eq("session_id", sessionId);
+
+    const kept = (participants || []).filter((p) => p.status !== "kicked");
+    const keptIds = new Set(kept.map((p) => p.id));
+
+    // Lecture paginée : la session peut dépasser 1000 réponses
+    const rows = await fetchAllRows<{
+      id: string;
+      participant_id: string;
+      is_correct: boolean | null;
+    }>((from, to) =>
+      this.supabase
+        .from("participant_answers")
+        .select("id, participant_id, is_correct")
+        .eq("session_id", sessionId)
+        .order("id", { ascending: true })
+        .range(from, to),
+    );
+
+    const progress = computeClassProgress(
+      rows.filter((r) => keptIds.has(r.participant_id)),
+    );
+
+    return {
+      classAccuracy: progress.classAccuracy,
+      participants: new Map(
+        kept.map((p) => [
+          p.id,
+          {
+            score: p.score ?? 0,
+            correctCount: progress.correctByParticipant.get(p.id) ?? 0,
+          },
+        ]),
+      ),
+    };
   }
 
   /**

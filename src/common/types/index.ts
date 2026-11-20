@@ -43,6 +43,10 @@ export interface Session {
   current_question_index: number;
   /** Mode de choix des pseudos (issue #5). */
   nickname_mode: "free" | "generated";
+  /** Mode de score (issue #8, migration 004). */
+  scoring_mode: "speed" | "accuracy";
+  /** Classement visible par les joueurs (issue #8, migration 004). */
+  show_leaderboard: boolean;
   question_start_time?: string;
   started_at?: string;
   ended_at?: string;
@@ -185,6 +189,42 @@ export interface WsQuizFinishedPayload {
   total_questions: number;
   message: string; // Message personnalisé selon le rang
 }
+
+// ============================================================
+// CLASSEMENT MASQUÉ (issue #8, sessions.show_leaderboard = false)
+// ============================================================
+
+/**
+ * "player:score" : envoyé à chaque joueur à la clôture de chaque question,
+ * uniquement si le classement est masqué. Remplace le classement.
+ */
+export interface WsPlayerScorePayload {
+  /** Score total du joueur. */
+  score: number;
+  /** Nombre de bonnes réponses du joueur sur les questions jouées. */
+  correctCount: number;
+  /**
+   * Précision de la classe, pourcentage entier 0-100 : bonnes réponses /
+   * réponses attendues (une par participant présent à la clôture de chaque
+   * question jouée, absences comprises). Participants exclus ignorés.
+   */
+  classAccuracy: number;
+}
+
+/**
+ * "quiz:finished" côté joueur quand le classement est masqué (remplace
+ * `WsQuizFinishedPayload`). Le créateur reçoit le payload habituel.
+ */
+export interface WsHiddenQuizFinishedPayload {
+  classAccuracy: number;
+  yourScore: number;
+}
+
+/** "answer:result" quand le classement est masqué : sans rang ni écarts. */
+export type WsHiddenAnswerResultPayload = Omit<
+  WsAnswerResultPayload,
+  "rank" | "total_participants" | "gap_to_next" | "gap_to_podium" | "on_podium"
+>;
 
 export interface WsParticipantJoinedPayload {
   participant: Participant;

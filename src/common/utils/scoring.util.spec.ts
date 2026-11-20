@@ -2,6 +2,7 @@ import {
   buildLeaderboard,
   calculatePoints,
   checkAnswer,
+  computeClassProgress,
   computeServerTimeTakenMs,
   generateSessionPassword,
   normalizeSessionCode,
@@ -95,6 +96,96 @@ describe("calculatePoints", () => {
         }
       }
     }
+  });
+});
+
+describe("calculatePoints : modes de score (issue #8)", () => {
+  const TIMER_S = 30;
+  const MAX = 100;
+
+  it('le mode par défaut est "speed" (comportement inchangé)', () => {
+    for (const t of [0, 5000, 15000, 25000, 29000, 30000, 30001]) {
+      expect(calculatePoints(true, t, TIMER_S, MAX)).toBe(
+        calculatePoints(true, t, TIMER_S, MAX, "speed"),
+      );
+    }
+    expect(calculatePoints(true, 15000, TIMER_S, MAX, "speed")).toBe(50);
+  });
+
+  it("accuracy : une bonne réponse dans le temps vaut maxPoints quel que soit le temps", () => {
+    for (const t of [0, 1, 5000, 15000, 29999]) {
+      expect(calculatePoints(true, t, TIMER_S, MAX, "accuracy")).toBe(100);
+    }
+    expect(calculatePoints(true, 44000, 45, 150, "accuracy")).toBe(150);
+  });
+
+  it("accuracy : bornes de la fenêtre de réponse [0, timerMs] inclus", () => {
+    expect(calculatePoints(true, 30000, TIMER_S, MAX, "accuracy")).toBe(100);
+    expect(calculatePoints(true, -3000, TIMER_S, MAX, "accuracy")).toBe(100);
+  });
+
+  it("accuracy : une réponse hors délai vaut toujours 0", () => {
+    expect(calculatePoints(true, 30001, TIMER_S, MAX, "accuracy")).toBe(0);
+    expect(calculatePoints(true, 60000, TIMER_S, MAX, "accuracy")).toBe(0);
+    expect(calculatePoints(true, NaN, TIMER_S, MAX, "accuracy")).toBe(0);
+    expect(calculatePoints(true, Infinity, TIMER_S, MAX, "accuracy")).toBe(0);
+  });
+
+  it("accuracy : une réponse fausse vaut 0", () => {
+    expect(calculatePoints(false, 0, TIMER_S, MAX, "accuracy")).toBe(0);
+    expect(calculatePoints(false, 10000, TIMER_S, MAX, "accuracy")).toBe(0);
+  });
+
+  it("accuracy : timer ou maxPoints invalides → 0", () => {
+    expect(calculatePoints(true, 0, 0, MAX, "accuracy")).toBe(0);
+    expect(calculatePoints(true, 0, NaN, MAX, "accuracy")).toBe(0);
+    expect(calculatePoints(true, 0, TIMER_S, 0, "accuracy")).toBe(0);
+    expect(calculatePoints(true, 0, TIMER_S, -5, "accuracy")).toBe(0);
+  });
+
+  it('un mode inconnu est traité comme "speed"', () => {
+    expect(calculatePoints(true, 15000, TIMER_S, MAX, "autre" as any)).toBe(50);
+  });
+
+  it("accuracy : toujours un entier entre 0 et maxPoints", () => {
+    for (const t of [-1e9, 0, 15000, 30000, 30001, 1e9]) {
+      for (const max of [1, 10, 100, 150, 1000]) {
+        const points = calculatePoints(true, t, TIMER_S, max, "accuracy");
+        expect(Number.isInteger(points)).toBe(true);
+        expect(points).toBeGreaterThanOrEqual(0);
+        expect(points).toBeLessThanOrEqual(max);
+      }
+    }
+  });
+});
+
+describe("computeClassProgress (issue #8)", () => {
+  it("calcule la précision de la classe en pourcentage entier", () => {
+    const progress = computeClassProgress([
+      { participant_id: "p1", is_correct: true },
+      { participant_id: "p1", is_correct: true },
+      { participant_id: "p2", is_correct: false },
+    ]);
+    // 2 bonnes réponses sur 3 attendues → 66.67 → 67
+    expect(progress.classAccuracy).toBe(67);
+    expect(progress.correctByParticipant.get("p1")).toBe(2);
+    expect(progress.correctByParticipant.has("p2")).toBe(false);
+  });
+
+  it("compte les absences (lignes timeout, is_correct false ou null) comme attendues", () => {
+    const progress = computeClassProgress([
+      { participant_id: "p1", is_correct: true },
+      { participant_id: "p2", is_correct: null },
+      { participant_id: "p3", is_correct: false },
+      { participant_id: "p4", is_correct: false },
+    ]);
+    expect(progress.classAccuracy).toBe(25);
+  });
+
+  it("renvoie 0 sans réponse", () => {
+    const progress = computeClassProgress([]);
+    expect(progress.classAccuracy).toBe(0);
+    expect(progress.correctByParticipant.size).toBe(0);
   });
 });
 

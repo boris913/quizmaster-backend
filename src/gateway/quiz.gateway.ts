@@ -19,6 +19,8 @@ import { ParticipantService } from "../participant/participant.service";
 import { corsOriginCallback } from "../common/utils/cors.util";
 import { NICKNAME_ERRORS } from "../common/utils/nickname.util";
 import type {
+  WsHiddenQuizFinishedPayload,
+  WsPlayerScorePayload,
   WsQuestionRevealPayload,
   WsQuestionStatsPayload,
 } from "../common/types";
@@ -72,6 +74,8 @@ interface ActiveQuestionState {
   options: Array<{ id: string; text: string }>;
   correctAnswers: string[];
   explanation: string | null;
+  /** Faux si la session masque le classement aux joueurs (issue #8). */
+  showLeaderboard: boolean;
 }
 
 /** Cause de la clôture d'une question. */
@@ -204,10 +208,30 @@ export class QuizGateway implements OnGatewayConnection, OnGatewayDisconnect {
         .neq("status", "kicked");
 
       // Notifier TOUT le monde dans la session (y compris créateur)
-      this.server.to(`session:${sessionId}`).emit("participant:joined", {
-        participant,
-        total_participants: count || 0,
-      });
+      const joinedPayload = { participant, total_participants: count || 0 };
+      if (await this.isLeaderboardHidden(sessionId)) {
+        // Classement masqué (issue #8) : pas de score des autres joueurs
+        this.server
+          .to(`creator:${sessionId}`)
+          .emit("participant:joined", joinedPayload);
+        const publicParticipant = participant
+          ? {
+              id: participant.id,
+              pseudo: participant.pseudo,
+              status: participant.status,
+            }
+          : participant;
+        await this.forEachPlayerSocket(sessionId, (socket) =>
+          socket.emit("participant:joined", {
+            participant: publicParticipant,
+            total_participants: count || 0,
+          }),
+        );
+      } else {
+        this.server
+          .to(`session:${sessionId}`)
+          .emit("participant:joined", joinedPayload);
+      }
 
       // Si une question est en cours, envoyer l'état actuel
       const activeQ = this.activeQuestions.get(sessionId);
@@ -401,6 +425,7 @@ export class QuizGateway implements OnGatewayConnection, OnGatewayDisconnect {
         options: Array.isArray(question.options) ? question.options : [],
         correctAnswers: question.correct_answers || [],
         explanation: question.explanation ?? null,
+        showLeaderboard: sessionDetails.show_leaderboard !== false,
       });
 
       this.logger.log(
@@ -474,7 +499,7 @@ export class QuizGateway implements OnGatewayConnection, OnGatewayDisconnect {
       // Envoyer le résultat UNIQUEMENT au participant (avec gaps).
       // Anti-triche (issue #6) : la bonne réponse n'est jamais envoyée avant
       // la clôture de la question ; elle part dans "question:reveal".
-      client.emit("answer:result", {
+      const answerResult = {
         is_correct: result.isCorrect,
         points_earned: result.pointsEarned,
         max_points: questionId, // sera remplacé par le vrai max_points
@@ -488,7 +513,22 @@ export class QuizGateway implements OnGatewayConnection, OnGatewayDisconnect {
         gap_to_podium: result.gapToPodium,
         on_podium: result.onPodium,
         waiting_for_timer: true,
-      });
+      };
+      if (activeQ.showLeaderboard) {
+        client.emit("answer:result", answerResult);
+      } else {
+        // Classement masqué (issue #8) : ni rang, ni écarts, ni podium
+        client.emit("answer:result", {
+          is_correct: answerResult.is_correct,
+          points_earned: answerResult.points_earned,
+          max_points: answerResult.max_points,
+          time_taken_ms: answerResult.time_taken_ms,
+          correct_answers: answerResult.correct_answers,
+          your_answer: answerResult.your_answer,
+          total_score: answerResult.total_score,
+          waiting_for_timer: answerResult.waiting_for_timer,
+        });
+      }
 
       // ============================================================
       // AMÉLIORATION AUDIT #5: BARRE DE PROGRESSION PARTICIPANT
@@ -598,10 +638,38 @@ export class QuizGateway implements OnGatewayConnection, OnGatewayDisconnect {
         on_podium: i < 3,
       }));
 
+      const winner = finalLeaderboard[0];
+      const creatorFinished = {
+        final_leaderboard: finalLeaderboard.slice(0, 10),
+        winner_pseudo: winner?.pseudo || null,
+        total_participants: finalLeaderboard.length,
+        total_questions: finalParticipants?.length || 0,
+      };
+
+      // Classement masqué (issue #8) : chaque joueur ne reçoit que la
+      // précision de la classe et son propre score ; le créateur, tout
+      if (await this.isLeaderboardHidden(sessionId)) {
+        const progress =
+          await this.participantService.computeClassProgress(sessionId);
+        await this.forEachPlayerSocket(sessionId, (socket, participantId) => {
+          const payload: WsHiddenQuizFinishedPayload = {
+            classAccuracy: progress.classAccuracy,
+            yourScore: progress.participants.get(participantId)?.score ?? 0,
+          };
+          socket.emit("quiz:finished", payload);
+        });
+        this.server
+          .to(`creator:${sessionId}`)
+          .emit("quiz:finished", creatorFinished);
+        this.logger.log(
+          `Quiz terminé pour la session ${sessionId} (classement masqué)`,
+        );
+        return;
+      }
+
       // ============================================================
       // AMÉLIORATION AUDIT #2: MESSAGE PERSONNALISÉ PAR PARTICIPANT
       // ============================================================
-      const winner = finalLeaderboard[0];
       const sockets = await this.server
         .in(`session:${sessionId}`)
         .fetchSockets();
@@ -645,12 +713,9 @@ export class QuizGateway implements OnGatewayConnection, OnGatewayDisconnect {
       // événement, sans les champs propres à un joueur. Les sockets créateur
       // sont ignorés par la boucle ci-dessus (pas de participantId) : ils ne
       // reçoivent donc l'événement qu'une fois.
-      this.server.to(`creator:${sessionId}`).emit("quiz:finished", {
-        final_leaderboard: finalLeaderboard.slice(0, 10),
-        winner_pseudo: winner?.pseudo || null,
-        total_participants: finalLeaderboard.length,
-        total_questions: finalParticipants?.length || 0,
-      });
+      this.server
+        .to(`creator:${sessionId}`)
+        .emit("quiz:finished", creatorFinished);
 
       this.logger.log(`Quiz terminé pour la session ${sessionId}`);
     } catch (error) {
@@ -767,6 +832,43 @@ export class QuizGateway implements OnGatewayConnection, OnGatewayDisconnect {
   }
 
   // ============================================================
+  // CLASSEMENT MASQUÉ (issue #8)
+  // ============================================================
+
+  /**
+   * Vrai si la session masque le classement aux joueurs
+   * (`sessions.show_leaderboard = false`). Colonne absente ou session
+   * introuvable : classement visible (comportement historique).
+   */
+  private async isLeaderboardHidden(sessionId: string): Promise<boolean> {
+    const { data } = await this.supabase
+      .from("sessions")
+      .select("show_leaderboard")
+      .eq("id", sessionId)
+      .single();
+    return data?.show_leaderboard === false;
+  }
+
+  /**
+   * Appelle `fn` pour chaque socket joueur (rôle "participant") de la
+   * session. Les sockets créateur sont ignorés.
+   */
+  private async forEachPlayerSocket(
+    sessionId: string,
+    fn: (
+      socket: { emit: (event: string, payload: unknown) => unknown },
+      participantId: string,
+    ) => void,
+  ): Promise<void> {
+    const sockets = await this.server.in(`session:${sessionId}`).fetchSockets();
+    for (const socket of sockets) {
+      const meta = this.socketMeta.get(socket.id);
+      if (meta?.role !== "participant" || !meta.participantId) continue;
+      fn(socket, meta.participantId);
+    }
+  }
+
+  // ============================================================
   // CLÔTURE DE QUESTION (Interne, issue #6)
   // ============================================================
 
@@ -825,11 +927,28 @@ export class QuizGateway implements OnGatewayConnection, OnGatewayDisconnect {
       );
 
       // Broadcast à tous : fin de la question + classement + réponses correctes
-      this.server.to(`session:${sessionId}`).emit("question:ended", {
+      const endedPayload = {
         question_id: questionId,
         correct_answers: activeQ.correctAnswers,
         leaderboard,
-      });
+      };
+      if (activeQ.showLeaderboard) {
+        this.server
+          .to(`session:${sessionId}`)
+          .emit("question:ended", endedPayload);
+      } else {
+        // Classement masqué (issue #8) : complet pour le créateur, sans
+        // classement pour les joueurs
+        this.server
+          .to(`creator:${sessionId}`)
+          .emit("question:ended", endedPayload);
+        await this.forEachPlayerSocket(sessionId, (socket) =>
+          socket.emit("question:ended", {
+            question_id: questionId,
+            correct_answers: activeQ.correctAnswers,
+          }),
+        );
+      }
 
       const stats = await this.participantService.computeQuestionStats(
         sessionId,
@@ -869,6 +988,21 @@ export class QuizGateway implements OnGatewayConnection, OnGatewayDisconnect {
           isCorrect: own?.isCorrect ?? false,
         };
         socket.emit("question:reveal", revealPayload);
+      }
+
+      // Classement masqué (issue #8) : score personnel à la place du classement
+      if (!activeQ.showLeaderboard) {
+        const progress =
+          await this.participantService.computeClassProgress(sessionId);
+        await this.forEachPlayerSocket(sessionId, (socket, participantId) => {
+          const own = progress.participants.get(participantId);
+          const payload: WsPlayerScorePayload = {
+            score: own?.score ?? 0,
+            correctCount: own?.correctCount ?? 0,
+            classAccuracy: progress.classAccuracy,
+          };
+          socket.emit("player:score", payload);
+        });
       }
 
       this.logger.log(
