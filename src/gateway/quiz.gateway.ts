@@ -18,6 +18,10 @@ import { SessionService } from "../session/session.service";
 import { ParticipantService } from "../participant/participant.service";
 import { corsOriginCallback } from "../common/utils/cors.util";
 import { NICKNAME_ERRORS } from "../common/utils/nickname.util";
+import type {
+  WsQuestionRevealPayload,
+  WsQuestionStatsPayload,
+} from "../common/types";
 
 // ============================================================
 // Payloads entrants (client → serveur)
@@ -57,13 +61,21 @@ interface WsCreatorKickPayload {
 }
 
 // Map interne: sessionId → { timerId, questionStartTime }
+// Les champs correctAnswers / explanation restent côté serveur jusqu'à la
+// clôture de la question (anti-triche, issue #6).
 interface ActiveQuestionState {
   timerId: NodeJS.Timeout;
   questionId: string;
   timerSeconds: number;
   questionStartTime: number;
   useGlobalTimer: boolean; // AMÉLIORATION AUDIT #4
+  options: Array<{ id: string; text: string }>;
+  correctAnswers: string[];
+  explanation: string | null;
 }
+
+/** Cause de la clôture d'une question. */
+type QuestionCloseReason = "timeout" | "all_answered";
 
 @WebSocketGateway({
   cors: {
@@ -131,6 +143,11 @@ export class QuizGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
 
     this.socketMeta.delete(client.id);
+
+    // Le joueur parti était peut-être le dernier à ne pas avoir répondu
+    if (meta?.participantId && meta.role === "participant" && meta.sessionId) {
+      await this.closeQuestionIfAllAnswered(meta.sessionId);
+    }
   }
 
   // ============================================================
@@ -332,7 +349,8 @@ export class QuizGateway implements OnGatewayConnection, OnGatewayDisconnect {
         .neq("status", "disconnected")
         .neq("status", "kicked");
 
-      // Préparer la question SANS les réponses correctes
+      // Préparer la question SANS les réponses correctes NI l'explication
+      // (liste blanche : ne jamais diffuser `question` tel quel aux joueurs)
       const sanitizedQuestion = {
         id: question.id,
         text: question.text,
@@ -369,12 +387,8 @@ export class QuizGateway implements OnGatewayConnection, OnGatewayDisconnect {
       });
 
       // Démarrer le timer côté serveur (source de vérité)
-      const timerId = setTimeout(async () => {
-        await this.handleQuestionTimeout(
-          sessionId,
-          question.id,
-          question.correct_answers,
-        );
+      const timerId = setTimeout(() => {
+        void this.closeQuestion(sessionId, question.id, "timeout");
       }, timerSeconds * 1000);
 
       // AMÉLIORATION AUDIT #4: Stocker useGlobalTimer
@@ -384,6 +398,9 @@ export class QuizGateway implements OnGatewayConnection, OnGatewayDisconnect {
         timerSeconds,
         questionStartTime,
         useGlobalTimer: quiz.use_global_timer,
+        options: Array.isArray(question.options) ? question.options : [],
+        correctAnswers: question.correct_answers || [],
+        explanation: question.explanation ?? null,
       });
 
       this.logger.log(
@@ -454,13 +471,15 @@ export class QuizGateway implements OnGatewayConnection, OnGatewayDisconnect {
         .update({ status: "answered" })
         .eq("id", participantId);
 
-      // Envoyer le résultat UNIQUEMENT au participant (avec gaps)
+      // Envoyer le résultat UNIQUEMENT au participant (avec gaps).
+      // Anti-triche (issue #6) : la bonne réponse n'est jamais envoyée avant
+      // la clôture de la question ; elle part dans "question:reveal".
       client.emit("answer:result", {
         is_correct: result.isCorrect,
         points_earned: result.pointsEarned,
         max_points: questionId, // sera remplacé par le vrai max_points
         time_taken_ms: result.timeTakenMs,
-        correct_answers: result.correctAnswers,
+        correct_answers: [],
         your_answer: answers,
         total_score: result.totalScore,
         rank: result.rank,
@@ -522,6 +541,9 @@ export class QuizGateway implements OnGatewayConnection, OnGatewayDisconnect {
       this.logger.log(
         `Réponse: participant ${participantId}, correct=${result.isCorrect}, points=${result.pointsEarned}`,
       );
+
+      // Tous les participants actifs ont répondu : clôture anticipée
+      await this.closeQuestionIfAllAnswered(sessionId);
     } catch (error) {
       this.logger.error(`Erreur answer:submit: ${error.message}`);
       client.emit("error", { message: error.message });
@@ -619,6 +641,17 @@ export class QuizGateway implements OnGatewayConnection, OnGatewayDisconnect {
         });
       }
 
+      // Room créateur (panneau de contrôle et écran de projection) : même
+      // événement, sans les champs propres à un joueur. Les sockets créateur
+      // sont ignorés par la boucle ci-dessus (pas de participantId) : ils ne
+      // reçoivent donc l'événement qu'une fois.
+      this.server.to(`creator:${sessionId}`).emit("quiz:finished", {
+        final_leaderboard: finalLeaderboard.slice(0, 10),
+        winner_pseudo: winner?.pseudo || null,
+        total_participants: finalLeaderboard.length,
+        total_questions: finalParticipants?.length || 0,
+      });
+
       this.logger.log(`Quiz terminé pour la session ${sessionId}`);
     } catch (error) {
       this.logger.error(`Erreur quiz:end: ${error.message}`);
@@ -687,7 +720,10 @@ export class QuizGateway implements OnGatewayConnection, OnGatewayDisconnect {
         .fetchSockets();
       for (const socket of sockets) {
         const meta = this.socketMeta.get(socket.id);
-        if (meta?.role !== "participant" || meta.participantId !== participantId)
+        if (
+          meta?.role !== "participant" ||
+          meta.participantId !== participantId
+        )
           continue;
         this.socketMeta.delete(socket.id);
         socket.emit("participant:kicked", { reason: "kicked" });
@@ -699,6 +735,9 @@ export class QuizGateway implements OnGatewayConnection, OnGatewayDisconnect {
         participant_id: participantId,
         reason: "kicked",
       });
+
+      // Le joueur exclu était peut-être le dernier à ne pas avoir répondu
+      await this.closeQuestionIfAllAnswered(sessionId);
 
       this.logger.log(
         `Participant ${participantId} exclu de la session ${sessionId}`,
@@ -728,38 +767,118 @@ export class QuizGateway implements OnGatewayConnection, OnGatewayDisconnect {
   }
 
   // ============================================================
-  // TIMEOUT DE QUESTION (Interne)
+  // CLÔTURE DE QUESTION (Interne, issue #6)
   // ============================================================
 
   /**
-   * Appelé quand le timer d'une question se termine côté serveur.
+   * Clôture la question active si tous les participants actifs (ni
+   * "kicked" ni "disconnected") y ont répondu. Sans effet sinon.
    */
-  private async handleQuestionTimeout(
+  private async closeQuestionIfAllAnswered(sessionId: string): Promise<void> {
+    const activeQ = this.activeQuestions.get(sessionId);
+    if (!activeQ) return;
+
+    const { answeredCount, totalParticipants } =
+      await this.participantService.countActiveAnswers(
+        sessionId,
+        activeQ.questionId,
+      );
+    if (totalParticipants > 0 && answeredCount >= totalParticipants) {
+      await this.closeQuestion(sessionId, activeQ.questionId, "all_answered");
+    }
+  }
+
+  /**
+   * Clôture une question (timeout ou tout le monde a répondu) :
+   * "question:ended" à toute la session, "question:stats" à la room
+   * créateur, "question:reveal" à chaque joueur.
+   *
+   * Idempotent : l'état actif est retiré de façon synchrone avant le premier
+   * `await`, donc un second appel concurrent (timer + dernière réponse, ou
+   * deux dernières réponses simultanées) ne trouve plus la question et ne
+   * réémet rien.
+   *
+   * @returns vrai si cet appel a effectivement clôturé la question
+   */
+  async closeQuestion(
     sessionId: string,
     questionId: string,
-    correctAnswers: string[],
-  ) {
-    this.logger.log(`Timeout question ${questionId} dans session ${sessionId}`);
-
-    // Supprimer l'état actif
+    reason: QuestionCloseReason,
+  ): Promise<boolean> {
+    const activeQ = this.activeQuestions.get(sessionId);
+    if (!activeQ || activeQ.questionId !== questionId) return false;
     this.activeQuestions.delete(sessionId);
+    clearTimeout(activeQ.timerId);
 
-    // Marquer les non-répondants comme timeout
-    await this.participantService.processTimeouts(sessionId, questionId);
-
-    // Construire le classement mis à jour (avec gaps)
-    const leaderboard = await this.participantService.buildSessionLeaderboard(
-      sessionId,
-      questionId,
+    this.logger.log(
+      `Clôture question ${questionId} dans session ${sessionId} (${reason})`,
     );
 
-    // Broadcast à tous : fin de la question + classement + réponses correctes
-    this.server.to(`session:${sessionId}`).emit("question:ended", {
-      question_id: questionId,
-      correct_answers: correctAnswers,
-      leaderboard,
-    });
+    try {
+      // Marquer les non-répondants comme timeout
+      await this.participantService.processTimeouts(sessionId, questionId);
 
-    this.logger.log(`Question ${questionId} terminée. Classement mis à jour.`);
+      // Construire le classement mis à jour (avec gaps)
+      const leaderboard = await this.participantService.buildSessionLeaderboard(
+        sessionId,
+        questionId,
+      );
+
+      // Broadcast à tous : fin de la question + classement + réponses correctes
+      this.server.to(`session:${sessionId}`).emit("question:ended", {
+        question_id: questionId,
+        correct_answers: activeQ.correctAnswers,
+        leaderboard,
+      });
+
+      const stats = await this.participantService.computeQuestionStats(
+        sessionId,
+        {
+          id: questionId,
+          options: activeQ.options,
+          correct_answers: activeQ.correctAnswers,
+        },
+      );
+
+      const statsPayload: WsQuestionStatsPayload = {
+        questionId,
+        distribution: stats.distribution,
+        correctAnswers: stats.correctAnswers,
+        accuracy: stats.accuracy,
+        answeredCount: stats.answeredCount,
+        totalParticipants: stats.totalParticipants,
+      };
+      this.server
+        .to(`creator:${sessionId}`)
+        .emit("question:stats", statsPayload);
+
+      // Correction individuelle pour chaque joueur connecté
+      const sockets = await this.server
+        .in(`session:${sessionId}`)
+        .fetchSockets();
+      for (const socket of sockets) {
+        const meta = this.socketMeta.get(socket.id);
+        if (meta?.role !== "participant" || !meta.participantId) continue;
+
+        const own = stats.answersByParticipant.get(meta.participantId);
+        const revealPayload: WsQuestionRevealPayload = {
+          questionId,
+          correctAnswers: activeQ.correctAnswers,
+          explanation: activeQ.explanation,
+          yourAnswers: own?.answers ?? [],
+          isCorrect: own?.isCorrect ?? false,
+        };
+        socket.emit("question:reveal", revealPayload);
+      }
+
+      this.logger.log(
+        `Question ${questionId} terminée. Classement mis à jour.`,
+      );
+    } catch (error) {
+      this.logger.error(
+        `Erreur clôture question ${questionId}: ${error.message}`,
+      );
+    }
+    return true;
   }
 }
