@@ -16,6 +16,7 @@ import { SupabaseClient } from "@supabase/supabase-js";
 import { SUPABASE_CLIENT } from "../database/database.module";
 import { SessionService } from "../session/session.service";
 import { ParticipantService } from "../participant/participant.service";
+import { corsOriginCallback } from "../common/utils/cors.util";
 
 // ============================================================
 // Payloads entrants (client → serveur)
@@ -60,7 +61,8 @@ interface ActiveQuestionState {
 
 @WebSocketGateway({
   cors: {
-    origin: process.env.FRONTEND_URL || "http://localhost:3000",
+    // Lu à chaque connexion (CORS_ORIGINS), voir common/utils/cors.util.ts
+    origin: corsOriginCallback,
     credentials: true,
   },
   namespace: "/",

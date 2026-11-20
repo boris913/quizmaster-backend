@@ -164,6 +164,26 @@ export class SessionService {
     return data;
   }
 
+  /**
+   * Supprime définitivement une session et toutes ses données (RGPD, issue #9).
+   * Réservé au créateur (404 sinon). Les participants et leurs réponses sont
+   * supprimés par la base grâce aux clés étrangères `ON DELETE CASCADE`
+   * (`participants.session_id`, `participant_answers.session_id` et
+   * `participant_answers.participant_id`, voir migrations/000_initial_schema.sql).
+   */
+  async deleteSession(sessionId: string, creatorId: string) {
+    await this.assertCreatorSession(sessionId, creatorId);
+
+    const { error } = await this.supabase
+      .from("sessions")
+      .delete()
+      .eq("id", sessionId)
+      .eq("creator_id", creatorId);
+
+    if (error) throw new Error(`Erreur suppression session: ${error.message}`);
+    return { id: sessionId, deleted: true };
+  }
+
   // ============================================================
   // REJOINDRE UNE SESSION (PARTICIPANT)
   // ============================================================

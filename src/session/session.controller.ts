@@ -124,10 +124,12 @@ export class SessionController {
 
   /**
    * DELETE /api/sessions/:id
-   * Terminer/fermer une session
+   * Supprime définitivement la session, ses participants et leurs réponses
+   * (créateur seulement, 404 sinon). Réponse : `{ id, deleted: true }`.
+   * La fin d'un quiz en direct passe par l'événement Socket.io `quiz:end`.
    */
   @Delete(":id")
-  endSession(@Param("id") id: string, @CurrentUser() user: JwtPayload) {
-    return this.sessionService.endSession(id, user.sub);
+  deleteSession(@Param("id") id: string, @CurrentUser() user: JwtPayload) {
+    return this.sessionService.deleteSession(id, user.sub);
   }
 }

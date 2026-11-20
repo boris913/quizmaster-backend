@@ -294,6 +294,56 @@ describe("SessionService : contrôle de propriété", () => {
     });
   });
 
+  describe("deleteSession", () => {
+    it("renvoie 404 à un autre utilisateur, sans rien supprimer", async () => {
+      supabase.mockResponse("sessions", { data: { creator_id: OWNER } });
+
+      await expect(service.deleteSession("s1", OTHER)).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+      const queries = supabase.queriesFor("sessions");
+      expect(queries).toHaveLength(1);
+      expect(queries[0].calls.some((c) => c.method === "delete")).toBe(false);
+    });
+
+    it("renvoie 404 si la session n'existe pas", async () => {
+      supabase.mockResponse("sessions", { data: null });
+
+      await expect(service.deleteSession("s1", OWNER)).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+    });
+
+    it("supprime la session du créateur (la cascade SQL fait le reste)", async () => {
+      supabase
+        .mockResponse("sessions", { data: { creator_id: OWNER } })
+        .mockResponse("sessions", { data: null });
+
+      await expect(service.deleteSession("s1", OWNER)).resolves.toEqual({
+        id: "s1",
+        deleted: true,
+      });
+
+      const deletion = supabase.queriesFor("sessions")[1];
+      expect(deletion.calls).toEqual([
+        { method: "delete", args: [] },
+        { method: "eq", args: ["id", "s1"] },
+        { method: "eq", args: ["creator_id", OWNER] },
+      ]);
+      // Pas de suppression manuelle : on s'appuie sur ON DELETE CASCADE
+      expect(supabase.queriesFor("participants")).toHaveLength(0);
+      expect(supabase.queriesFor("participant_answers")).toHaveLength(0);
+    });
+
+    it("remonte une erreur Supabase", async () => {
+      supabase
+        .mockResponse("sessions", { data: { creator_id: OWNER } })
+        .mockResponse("sessions", { error: { message: "boom" } });
+
+      await expect(service.deleteSession("s1", OWNER)).rejects.toThrow("boom");
+    });
+  });
+
   describe("createSession", () => {
     it("renvoie 404 si le quiz appartient à un autre utilisateur", async () => {
       supabase.mockResponse("quizzes", {
