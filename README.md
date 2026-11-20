@@ -326,6 +326,9 @@ socket.emit('session:resume', { sessionId: string })
 'error' → { message: string }
 ```
 
+Quand la session masque le classement (`show_leaderboard = false`), les
+événements joueurs changent : voir [Classement masqué](#classement-masqué).
+
 ---
 
 ## Algorithme de Scoring
@@ -349,6 +352,47 @@ par le client n'est prise en compte. Un timer de durée nulle ou négative donne
 - Réponse en 5s → `100 × (1 - 5/30) = 83 pts`
 - Réponse en 25s → `100 × (1 - 25/30) = 17 pts`
 - Réponse en 29s → `max(3, 10) = 10 pts` (minimum garanti)
+
+### Modes de score
+
+Choisi à la création de la session (`POST /api/sessions`), stocké dans
+`sessions.scoring_mode` (migration `004_scoring_modes.sql`) :
+
+| `scoringMode` | Bonne réponse dans le temps | Hors délai / fausse |
+|---------------|-----------------------------|---------------------|
+| `speed` (défaut) | formule ci-dessus (vitesse récompensée) | 0 |
+| `accuracy` | `maxPoints`, quel que soit le temps | 0 |
+
+```jsonc
+// POST /api/sessions
+{ "quiz_id": "uuid", "scoringMode": "accuracy", "showLeaderboard": false }
+```
+
+Les deux champs sont facultatifs (`speed` et `true` par défaut) ; une autre
+valeur est refusée (400).
+
+### Classement masqué
+
+Avec `showLeaderboard: false` (`sessions.show_leaderboard`), Kwizora n'envoie
+**aucun classement ni rang aux joueurs**. Le créateur (room `creator:<id>` :
+panneau de contrôle et écran de projection) reçoit tous les événements
+habituels, classement compris : c'est au frontend de ne pas projeter le
+classement dans ce mode.
+
+| Événement (vers les joueurs) | Différence en mode masqué |
+|------------------------------|---------------------------|
+| `participant:joined` | `participant` réduit à `{ id, pseudo, status }` (pas de score) |
+| `answer:result` | sans `rank`, `total_participants`, `gap_to_next`, `gap_to_podium`, `on_podium` |
+| `question:ended` | `{ question_id, correct_answers }` (pas de `leaderboard`) |
+| `player:score` (nouveau) | `{ score, correctCount, classAccuracy }`, à chaque clôture de question |
+| `quiz:finished` | `{ classAccuracy, yourScore }` uniquement |
+
+`classAccuracy` : précision de la classe, pourcentage entier 0-100 = bonnes
+réponses / réponses attendues, sur toutes les questions déjà clôturées. Une
+réponse attendue = une ligne `participant_answers` (réponse donnée, ou ligne
+`timeout` créée à la clôture pour chaque participant présent sans réponse).
+Les participants exclus (`kicked`) sont ignorés. `correctCount` = nombre de
+bonnes réponses du joueur.
 
 ---
 
