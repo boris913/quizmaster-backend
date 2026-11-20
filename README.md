@@ -147,10 +147,31 @@ src/
 | GET | `/api/quizzes/:id` | Détail + questions |
 | PATCH | `/api/quizzes/:id` | Modifier |
 | DELETE | `/api/quizzes/:id` | Supprimer |
-| POST | `/api/quizzes/:id/questions` | Ajouter des questions |
+| POST | `/api/quizzes/:id/questions` | Ajouter des questions (`{ questions: [...] }`, validé par type) |
+| POST | `/api/quizzes/:id/questions/image-upload-url` | URL signée d'upload d'une image (issue #7) |
 | DELETE | `/api/quizzes/:id/questions/:qId` | Supprimer une question |
 | POST | `/api/quizzes/:id/questions/reorder` | Réordonner |
 | POST | `/api/quizzes/:id/import` | Import Markdown |
+
+### Types de question et images (issue #7)
+
+| Type | `options` | `correct_answers` | Réponse du joueur (`answers`) | Correction |
+|------|-----------|-------------------|-------------------------------|------------|
+| `single` | 2 à 4, ids A-D | 1 id | `["B"]` | égalité |
+| `multiple` | 2 à 4, ids A-D | ≥ 1 id | `["A","C"]` | même ensemble (ordre indifférent) |
+| `true_false` | absentes ou `true`/`false` (stockées : Vrai/Faux) | `["true"]` ou `["false"]` | `["true"]` | égalité |
+| `ordering` | 3 à 6, ids A-F | tous les ids, dans l'ordre attendu | tous les ids dans l'ordre choisi | séquence exacte (aucun tri) |
+| `short_answer` | absentes / `[]` | 1 à 20 variantes (≤ 100 car.) | `["texte"]` (≤ 200 car.) | comparaison normalisée (casse, accents, espaces, ponctuation finale) |
+| `poll` | 2 à 6, ids A-F | `[]` | `["A"]` | jamais juste, 0 point, exclu des précisions |
+
+- `ordering` : à l'enregistrement, les ids sont réattribués au hasard (les
+  lettres ne trahissent pas l'ordre) ; l'éditeur doit afficher les éléments
+  dans l'ordre de `correct_answers`. Les joueurs reçoivent les options
+  mélangées, jamais dans l'ordre attendu.
+- `image_url` (facultatif, http(s), ≤ 2048 car.) : en pratique la
+  `public_url` renvoyée par `POST /api/quizzes/:id/questions/image-upload-url`
+  (corps `{ content_type: "image/png"|"image/jpeg"|"image/webp"|"image/gif", size }`,
+  2 Mo au plus). Configuration du bucket : `migrations/README.md`.
 
 ### Sessions
 
@@ -287,7 +308,8 @@ socket.emit('session:resume', { sessionId: string })
 
 // Lancement d'une question (broadcast à tous)
 'question:start' → {
-  question: { id, text, type, options, max_points, timer_seconds },
+  question: { id, text, type, options, image_url, max_points, timer_seconds, order_index },
+  // ordering : options mélangées ; short_answer : options = []
   question_number: number,
   total_questions: number,
   timer_seconds: number,
@@ -418,6 +440,42 @@ C) Révolution Américaine
 D) Guerre de 100 ans
 ```
 
+### Types, images et réponses libres (issue #7)
+
+```markdown
+Question 3 [type: true_false] [points:50]
+La Terre est plate.
+= faux
+> Explication : elle est (presque) sphérique.
+
+Question 4 [type: ordering] [timer:40]
+Rangez du plus petit au plus grand
+![Animaux](https://exemple.org/animaux.png)
+A) Souris
+B) Chat
+C) Cheval
+
+Question 5 [type: short_answer]
+Capitale de l'Italie ?
+= Rome
+= Roma
+
+Question 6 [type: poll]
+Votre saison préférée ?
+A) Printemps
+B) Été
+```
+
+- Marqueurs d'en-tête `[timer:N]`, `[points:N]`, `[type: T]` dans n'importe
+  quel ordre ; `T` ∈ single, multiple, true_false, ordering, short_answer,
+  poll. Sans marqueur, le type est déduit (`multiple` si plusieurs
+  `[correct]`, sinon `single`).
+- `![texte](url)` sous l'en-tête : image de la question (http(s)).
+- `= texte` après l'énoncé : réponse attendue (`vrai`/`faux` pour
+  true_false, une variante par ligne pour short_answer).
+- ordering : options A à F listées **dans l'ordre attendu**.
+- Une question typée invalide fait échouer l'import (400, numéro de question).
+
 ### Format `Reponses.md` (optionnel, si réponses séparées)
 
 ```markdown
@@ -427,6 +485,8 @@ C
 ## Question 2
 A,B
 ```
+
+Ne s'applique qu'aux questions à choix (single/multiple).
 
 ---
 
