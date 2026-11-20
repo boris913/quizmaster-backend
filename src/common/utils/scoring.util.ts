@@ -1,12 +1,23 @@
 import { randomInt } from "crypto";
 
+/** Modes de score d'une session (issue #8, migration 004). */
+export const SCORING_MODES = ["speed", "accuracy"] as const;
+export type ScoringMode = (typeof SCORING_MODES)[number];
+
 /**
  * Calcule les points obtenus pour une réponse.
  *
- * Formule :
+ * Mode "speed" (défaut) :
  *   points = maxPoints × (1 - timeTakenMs / (timerSeconds * 1000))
  *   Minimum garanti pour une réponse juste dans le temps : 10 % des maxPoints
- *   Si réponse fausse ou arrivée après la fin du timer → 0
+ *
+ * Mode "accuracy" (issue #8) :
+ *   toute réponse juste arrivée dans le temps vaut maxPoints, quel que soit
+ *   le temps mis.
+ *
+ * Dans les deux modes : réponse fausse ou arrivée après la fin du timer → 0.
+ * Un mode inconnu (valeur absente en base, par exemple) est traité comme
+ * "speed".
  *
  * Bornes (défense en profondeur, le temps doit être mesuré côté serveur) :
  *   - la fenêtre de réponse est [0, timerMs] inclus ; au-delà → 0 point ;
@@ -23,6 +34,7 @@ export function calculatePoints(
   timeTakenMs: number,
   timerSeconds: number,
   maxPoints: number,
+  mode: ScoringMode = "speed",
 ): number {
   if (!isCorrect) return 0;
   if (!Number.isFinite(maxPoints) || maxPoints <= 0) return 0;
@@ -30,6 +42,9 @@ export function calculatePoints(
 
   const timerMs = timerSeconds * 1000;
   if (!Number.isFinite(timeTakenMs) || timeTakenMs > timerMs) return 0;
+
+  // Précision : la vitesse ne compte pas, seule la fenêtre de réponse compte
+  if (mode === "accuracy") return Math.floor(maxPoints);
 
   const boundedTime = Math.max(0, timeTakenMs);
   const ratio = 1 - boundedTime / timerMs;
@@ -154,4 +169,45 @@ export function buildLeaderboard(
       on_podium: rank <= 3,
     };
   });
+}
+
+/** Ligne de `participant_answers` utile au calcul de la précision de classe. */
+export interface ClassProgressRow {
+  participant_id: string;
+  is_correct: boolean | null;
+}
+
+export interface ClassProgress {
+  /**
+   * Précision de la classe, pourcentage entier 0-100 : bonnes réponses /
+   * réponses attendues. Chaque ligne de `participant_answers` est une
+   * réponse attendue (réponse donnée, ou ligne "timeout" créée à la clôture
+   * pour chaque participant présent sans réponse). 0 s'il n'y a aucune ligne.
+   */
+  classAccuracy: number;
+  /** Nombre de bonnes réponses par participant (absent = 0). */
+  correctByParticipant: Map<string, number>;
+}
+
+/**
+ * Précision de la classe et bonnes réponses par participant (issue #8,
+ * classement masqué). Fonction pure : le filtrage des lignes (session,
+ * participants exclus) est fait par l'appelant.
+ */
+export function computeClassProgress(rows: ClassProgressRow[]): ClassProgress {
+  const correctByParticipant = new Map<string, number>();
+  let correct = 0;
+  for (const row of rows) {
+    if (row.is_correct !== true) continue;
+    correct++;
+    correctByParticipant.set(
+      row.participant_id,
+      (correctByParticipant.get(row.participant_id) ?? 0) + 1,
+    );
+  }
+  return {
+    classAccuracy:
+      rows.length > 0 ? Math.round((correct / rows.length) * 100) : 0,
+    correctByParticipant,
+  };
 }

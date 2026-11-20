@@ -86,6 +86,8 @@ export class SessionService {
           status: "waiting",
           current_question_index: -1,
           nickname_mode: dto.nicknameMode ?? "free",
+          scoring_mode: dto.scoringMode ?? "speed",
+          show_leaderboard: dto.showLeaderboard ?? true,
         })
         .select()
         .single();
@@ -198,7 +200,9 @@ export class SessionService {
     // Chercher la session par mot de passe
     const { data: session, error: sessionError } = await this.supabase
       .from("sessions")
-      .select("id, status, quiz_id, quizzes(title, total_questions)")
+      .select(
+        "id, status, quiz_id, scoring_mode, show_leaderboard, quizzes(title, total_questions)",
+      )
       .eq("password", normalizeSessionCode(dto.password))
       .in("status", ["waiting", "active", "paused"])
       .single();

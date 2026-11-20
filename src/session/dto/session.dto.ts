@@ -1,4 +1,5 @@
 import {
+  IsBoolean,
   IsIn,
   IsOptional,
   IsString,
@@ -7,7 +8,11 @@ import {
   Matches,
 } from "class-validator";
 import { Transform } from "class-transformer";
-import { normalizeSessionCode } from "../../common/utils/scoring.util";
+import {
+  normalizeSessionCode,
+  SCORING_MODES,
+  ScoringMode,
+} from "../../common/utils/scoring.util";
 import { NICKNAME_MODES, NicknameMode } from "../../common/utils/nickname.util";
 
 export class CreateSessionDto {
@@ -23,6 +28,25 @@ export class CreateSessionDto {
     message: "nicknameMode doit valoir 'free' ou 'generated'",
   })
   nicknameMode?: NicknameMode;
+
+  /**
+   * Mode de score (issue #8) :
+   * "speed" (défaut) : points dégressifs avec le temps de réponse.
+   * "accuracy" : toute bonne réponse dans le temps vaut les points max.
+   */
+  @IsOptional()
+  @IsIn(SCORING_MODES, {
+    message: "scoringMode doit valoir 'speed' ou 'accuracy'",
+  })
+  scoringMode?: ScoringMode;
+
+  /**
+   * Classement visible par les joueurs (issue #8), `true` par défaut.
+   * À `false`, aucun classement ni rang n'est envoyé aux joueurs.
+   */
+  @IsOptional()
+  @IsBoolean({ message: "showLeaderboard doit être un booléen" })
+  showLeaderboard?: boolean;
 }
 
 export class JoinSessionDto {
