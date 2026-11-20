@@ -28,6 +28,8 @@ import {
   ShowExplanationsMode,
 } from "./assignment.util";
 import { SubmitAssignmentAnswerDto } from "./dto/assignment.dto";
+import { QuestionType } from "../common/utils/question-types.util";
+import { sanitizeSubmittedAnswers } from "../participant/participant.service";
 import type {
   AssignmentAnswerResponse,
   AssignmentDoneResponse,
@@ -297,6 +299,9 @@ export class AssignmentService {
     );
     const timerSeconds = this.timerSecondsFor(session, question);
     const timerMs = timerSeconds * 1000;
+    // Même validation de forme que le direct (#7) : 6 éléments au plus,
+    // réponse courte unique de 200 caractères au plus. Lève une 400 sinon.
+    const submitted = sanitizeSubmittedAnswers(question.type, dto.answers);
 
     let row: AnswerRow;
     if (elapsed === null || elapsed > timerMs + ASYNC_ANSWER_GRACE_MS) {
@@ -311,13 +316,13 @@ export class AssignmentService {
     } else {
       const timeTakenMs = Math.min(elapsed, timerMs);
       const isCorrect = checkAnswer(
-        dto.answers,
+        submitted,
         question.correct_answers ?? [],
-        question.type as "single" | "multiple",
+        question.type as QuestionType,
       );
       row = {
         question_id: question.id,
-        answers: dto.answers,
+        answers: submitted,
         status: "answered",
         is_correct: isCorrect,
         points_earned: calculatePoints(

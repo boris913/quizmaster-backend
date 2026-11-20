@@ -15,7 +15,52 @@ import {
   computeServerTimeTakenMs,
   ScoringMode,
 } from "../common/utils/scoring.util";
+import {
+  buildAnswerDistribution,
+  isGradedQuestionType,
+  SHORT_ANSWER_SUBMISSION_MAX_LENGTH,
+} from "../common/utils/question-types.util";
 import { fetchAllRows } from "../session/results/fetch-all-rows";
+
+/** Nombre maximal d'éléments dans une réponse soumise (6 options au plus). */
+const MAX_SUBMITTED_ANSWERS = 6;
+
+/**
+ * Valide la forme d'une réponse soumise par un joueur (issue #7) : tableau
+ * de chaînes, au plus 6 éléments ; pour `short_answer`, un seul texte
+ * rogné, de 200 caractères au plus. Lève une 400 sinon.
+ */
+export function sanitizeSubmittedAnswers(
+  type: string,
+  answers: unknown,
+): string[] {
+  if (
+    !Array.isArray(answers) ||
+    answers.length > MAX_SUBMITTED_ANSWERS ||
+    !answers.every((a) => typeof a === "string")
+  ) {
+    throw new BadRequestException("Réponse invalide");
+  }
+  if (type === "short_answer") {
+    if (answers.length > 1) throw new BadRequestException("Réponse invalide");
+    const text = (answers[0] ?? "").trim();
+    if (text.length > SHORT_ANSWER_SUBMISSION_MAX_LENGTH) {
+      throw new BadRequestException(
+        `Réponse trop longue (${SHORT_ANSWER_SUBMISSION_MAX_LENGTH} caractères au plus)`,
+      );
+    }
+    return text ? [text] : [];
+  }
+  return answers as string[];
+}
+
+/** Type de la question jointe à une ligne `participant_answers` (`questions (type)`). */
+function joinedQuestionType(row: { questions?: unknown }): string | null {
+  const q: any = Array.isArray(row.questions)
+    ? row.questions[0]
+    : row.questions;
+  return typeof q?.type === "string" ? q.type : null;
+}
 
 /**
  * Réponse live arrivée alors qu'une ligne existe déjà pour ce participant et
@@ -54,6 +99,8 @@ export interface AnswerResult {
 /** Données de la question nécessaires au calcul des statistiques. */
 export interface QuestionForStats {
   id: string;
+  /** Type de la question (issue #7) ; absent = "single" (rétrocompatible). */
+  type?: string;
   options: Array<{ id: string }>;
   correct_answers: string[];
 }
@@ -61,11 +108,18 @@ export interface QuestionForStats {
 /** Statistiques d'une question clôturée (issue #6). */
 export interface QuestionStats {
   questionId: string;
-  /** Nombre de participants ayant coché chaque option (0 pour une option non choisie). */
+  /** Type de la question (issue #7). */
+  type: string;
+  /** Répartition des réponses selon le type, voir `buildAnswerDistribution`. */
   distribution: Record<string, number>;
   correctAnswers: string[];
-  /** Pourcentage entier (0-100) de bonnes réponses parmi `totalParticipants`. */
+  /**
+   * Pourcentage entier (0-100) de bonnes réponses parmi `totalParticipants`.
+   * 0 pour une question non notée (poll).
+   */
   accuracy: number;
+  /** Faux pour un sondage (poll), exclu des précisions. */
+  graded: boolean;
   answeredCount: number;
   totalParticipants: number;
   /** Réponse de chaque participant actif ayant répondu (pour "question:reveal"). */
@@ -86,7 +140,7 @@ export class ParticipantService {
    * rapporte 0 point (voir `calculatePoints`).
    */
   async submitAnswer(params: SubmitAnswerParams): Promise<AnswerResult> {
-    const { participantId, sessionId, questionId, answers } = params;
+    const { participantId, sessionId, questionId } = params;
     const receivedAtMs = params.receivedAtMs ?? Date.now();
 
     // Vérifier que le participant n'a pas déjà répondu à cette question
@@ -112,7 +166,10 @@ export class ParticipantService {
       throw new BadRequestException("Question introuvable");
     }
 
-    // Vérifier si la réponse est correcte
+    // Forme de la réponse selon le type (issue #7)
+    const answers = sanitizeSubmittedAnswers(question.type, params.answers);
+
+    // Vérifier si la réponse est correcte (poll : jamais, 0 point)
     const isCorrect = checkAnswer(
       answers,
       question.correct_answers,
@@ -355,10 +412,8 @@ export class ParticipantService {
       .eq("question_id", question.id);
 
     const activeIds = new Set((participants || []).map((p) => p.id));
-    const optionIds = new Set((question.options || []).map((o) => o.id));
-
-    const distribution: Record<string, number> = {};
-    for (const id of optionIds) distribution[id] = 0;
+    const type = question.type ?? "single";
+    const graded = isGradedQuestionType(type);
 
     const answersByParticipant = new Map<
       string,
@@ -372,25 +427,26 @@ export class ParticipantService {
       const answers: string[] = Array.isArray(row.answers) ? row.answers : [];
       if (row.status === "timeout" || answers.length === 0) continue;
 
-      const isCorrect = row.is_correct === true;
+      const isCorrect = graded && row.is_correct === true;
       answersByParticipant.set(row.participant_id, { answers, isCorrect });
       if (isCorrect) correctCount++;
-
-      // Chaque option comptée une fois par participant
-      for (const optionId of new Set(answers)) {
-        if (optionIds.has(optionId)) distribution[optionId]++;
-      }
     }
 
     const totalParticipants = activeIds.size;
     return {
       questionId: question.id,
-      distribution,
+      type,
+      distribution: buildAnswerDistribution(
+        type,
+        question.options,
+        [...answersByParticipant.values()].map((a) => a.answers),
+      ),
       correctAnswers: question.correct_answers || [],
       accuracy:
-        totalParticipants > 0
+        graded && totalParticipants > 0
           ? Math.round((correctCount / totalParticipants) * 100)
           : 0,
+      graded,
       answeredCount: answersByParticipant.size,
       totalParticipants,
       answersByParticipant,
@@ -444,8 +500,8 @@ export class ParticipantService {
    * entier 0-100, sur toutes les lignes `participant_answers` de la session
    * (une par participant présent à la clôture de chaque question jouée :
    * réponse donnée ou "timeout"). Les lignes des participants exclus
-   * ("kicked") sont ignorées. `correctCount` = nombre de lignes `is_correct`
-   * du participant.
+   * ("kicked") sont ignorées, ainsi que les questions non notées (poll,
+   * issue #7). `correctCount` = nombre de lignes `is_correct` du participant.
    */
   async computeClassProgress(sessionId: string): Promise<{
     classAccuracy: number;
@@ -464,17 +520,22 @@ export class ParticipantService {
       id: string;
       participant_id: string;
       is_correct: boolean | null;
+      questions?: unknown;
     }>((from, to) =>
       this.supabase
         .from("participant_answers")
-        .select("id, participant_id, is_correct")
+        .select("id, participant_id, is_correct, questions (type)")
         .eq("session_id", sessionId)
         .order("id", { ascending: true })
         .range(from, to),
     );
 
     const progress = computeClassProgress(
-      rows.filter((r) => keptIds.has(r.participant_id)),
+      rows.filter(
+        (r) =>
+          keptIds.has(r.participant_id) &&
+          isGradedQuestionType(joinedQuestionType(r) ?? "single"),
+      ),
     );
 
     return {
@@ -506,18 +567,25 @@ export class ParticipantService {
 
     const { data: answers } = await this.supabase
       .from("participant_answers")
-      .select("is_correct, points_earned, time_taken_ms, status")
+      .select(
+        "is_correct, points_earned, time_taken_ms, status, questions (type)",
+      )
       .eq("participant_id", participantId);
 
-    const correctCount = answers?.filter((a) => a.is_correct).length || 0;
-    const totalAnswers = answers?.length || 0;
+    // Questions non notées (poll, issue #7) exclues de la précision
+    const graded = (answers || []).filter((a) =>
+      isGradedQuestionType(joinedQuestionType(a) ?? "single"),
+    );
+    const correctCount = graded.filter((a) => a.is_correct).length;
 
     return {
       ...participant,
       correct_count: correctCount,
-      total_answers: totalAnswers,
+      total_answers: answers?.length || 0,
       accuracy:
-        totalAnswers > 0 ? Math.round((correctCount / totalAnswers) * 100) : 0,
+        graded.length > 0
+          ? Math.round((correctCount / graded.length) * 100)
+          : 0,
     };
   }
 

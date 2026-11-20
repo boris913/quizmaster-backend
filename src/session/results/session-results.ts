@@ -10,8 +10,11 @@
  *   (réponse `answered`, ou `timeout` insérée à la fin du chrono).
  * - Précision (`accuracy`, 0..1) = réponses correctes / lignes de réponse,
  *   timeouts compris (un timeout compte comme une réponse fausse).
- * - Les questions dont le type n'est pas notable (`poll`, à venir avec #05)
- *   sont exclues de toutes les précisions ; leur `accuracy` vaut 0.
+ * - Les questions dont le type n'est pas notable (`poll`, issue #7) sont
+ *   exclues de toutes les précisions ; leur `accuracy` vaut 0.
+ * - `answerDistribution` suit `buildAnswerDistribution` : par option pour
+ *   single/multiple/true_false/poll, `{}` pour ordering, par réponse
+ *   normalisée pour short_answer (mêmes règles que "question:stats").
  * - `avgTimeMs` = moyenne de `time_taken_ms` sur les réponses `answered`
  *   uniquement (un timeout n'a pas de temps) ; 0 s'il n'y en a aucune.
  * - `completionRate` = réponses `answered` / (participants × questions
@@ -21,12 +24,15 @@
  *   participant n'appartient pas à la session, est ignorée.
  */
 
-/** Types de question exclus du calcul de précision (pas de bonne réponse). */
-export const UNGRADED_QUESTION_TYPES: readonly string[] = ["poll"];
+import {
+  buildAnswerDistribution,
+  isGradedQuestionType,
+} from "../../common/utils/question-types.util";
 
-export function isGradedQuestionType(type: string): boolean {
-  return !UNGRADED_QUESTION_TYPES.includes(type);
-}
+export {
+  UNGRADED_QUESTION_TYPES,
+  isGradedQuestionType,
+} from "../../common/utils/question-types.util";
 
 // ------------------------------------------------------------
 // Lignes lues en base
@@ -156,14 +162,11 @@ export function buildSessionResults(input: {
   const perQuestion: QuestionResult[] = questions.map((q) => {
     const rows = answers.filter((a) => a.question_id === q.id);
 
-    const answerDistribution: Record<string, number> = {};
-    for (const option of q.options ?? []) answerDistribution[option.id] = 0;
-    for (const row of rows) {
-      if (row.status !== "answered") continue;
-      for (const optionId of new Set(row.answers ?? [])) {
-        answerDistribution[optionId] = (answerDistribution[optionId] ?? 0) + 1;
-      }
-    }
+    const answerDistribution = buildAnswerDistribution(
+      q.type,
+      q.options,
+      rows.filter((a) => a.status === "answered").map((a) => a.answers ?? []),
+    );
 
     const graded = isGradedQuestionType(q.type);
     return {

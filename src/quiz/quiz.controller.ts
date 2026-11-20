@@ -12,7 +12,8 @@ import { QuizService } from "./quiz.service";
 import {
   CreateQuizDto,
   UpdateQuizDto,
-  CreateQuestionDto,
+  AddQuestionsDto,
+  ImageUploadUrlDto,
   ImportQuestionsDto,
 } from "./dto/quiz.dto";
 import { JwtAuthGuard } from "../common/guards/jwt-auth.guard";
@@ -82,10 +83,24 @@ export class QuizController {
   @Post(":id/questions")
   addQuestions(
     @Param("id") id: string,
-    @Body() body: { questions: CreateQuestionDto[] },
+    @Body() body: AddQuestionsDto,
     @CurrentUser() user: JwtPayload,
   ) {
     return this.quizService.addQuestions(id, user.sub, body.questions);
+  }
+
+  /**
+   * POST /api/quizzes/:id/questions/image-upload-url (issue #7)
+   * URL signée d'upload d'une image de question (bucket `question-images`).
+   * Corps : { content_type: image/png|jpeg|webp|gif, size: octets ≤ 2 Mo }.
+   */
+  @Post(":id/questions/image-upload-url")
+  createImageUploadUrl(
+    @Param("id") id: string,
+    @Body() dto: ImageUploadUrlDto,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.quizService.createImageUploadUrl(id, user.sub, dto);
   }
 
   /**
