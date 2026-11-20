@@ -232,11 +232,11 @@ describe("SessionService : modération des pseudos (issue #5)", () => {
   it("createSession enregistre le mode de pseudo (free par défaut)", async () => {
     const quiz = { id: "quiz1", creator_id: "u1", total_questions: 2, title: "Q" };
     supabase
+      // Plus de pré-vérification du code (#3) : insertion directe, avec
+      // nouveau tirage seulement en cas de collision 23505.
       .mockResponse("quizzes", { data: quiz })
-      .mockResponse("sessions", { data: null }) // code libre
       .mockResponse("sessions", { data: { id: "s1" } })
       .mockResponse("quizzes", { data: quiz })
-      .mockResponse("sessions", { data: null })
       .mockResponse("sessions", { data: { id: "s2" } });
 
     await service.createSession("u1", { quiz_id: "quiz1" });

@@ -6,6 +6,8 @@ import {
   MaxLength,
   Matches,
 } from "class-validator";
+import { Transform } from "class-transformer";
+import { normalizeSessionCode } from "../../common/utils/scoring.util";
 import { NICKNAME_MODES, NicknameMode } from "../../common/utils/nickname.util";
 
 export class CreateSessionDto {
@@ -24,6 +26,10 @@ export class CreateSessionDto {
 }
 
 export class JoinSessionDto {
+  // Normalisé avant la validation de longueur : " ab c12d " devient "ABC12D"
+  @Transform(({ value }) =>
+    typeof value === "string" ? normalizeSessionCode(value) : value,
+  )
   @IsString()
   @MinLength(6)
   @MaxLength(6)

@@ -5,16 +5,47 @@ import {
   ConflictException,
   ForbiddenException,
   BadRequestException,
+  ServiceUnavailableException,
 } from "@nestjs/common";
 import { SupabaseClient } from "@supabase/supabase-js";
 import { SUPABASE_CLIENT } from "../database/database.module";
 import { CreateSessionDto, JoinSessionDto } from "./dto/session.dto";
-import { generateSessionPassword } from "../common/utils/scoring.util";
+import {
+  generateSessionPassword,
+  normalizeSessionCode,
+} from "../common/utils/scoring.util";
 import {
   NICKNAME_ERRORS,
   generateNicknameSuggestions,
   getNicknameError,
 } from "../common/utils/nickname.util";
+import {
+  buildSessionResults,
+  ResultsAnswerRow,
+  ResultsParticipantRow,
+  ResultsQuestionRow,
+  SessionResults,
+} from "./results/session-results";
+import { buildResultsCsv, resultsCsvFilename } from "./results/results-csv";
+import { fetchAllRows } from "./results/fetch-all-rows";
+
+/** Nombre maximal de tirages pour obtenir un code de session unique. */
+export const MAX_SESSION_CODE_ATTEMPTS = 10;
+
+/**
+ * Violation d'unicité Postgres (23505) portant sur le code de session
+ * (contrainte `sessions_password_key`).
+ */
+function isSessionCodeConflict(error: {
+  code?: string;
+  message?: string;
+  details?: string;
+}): boolean {
+  return (
+    error.code === "23505" &&
+    /password/i.test(`${error.message ?? ""} ${error.details ?? ""}`)
+  );
+}
 
 @Injectable()
 export class SessionService {
@@ -40,35 +71,38 @@ export class SessionService {
       throw new BadRequestException("Le quiz doit avoir au moins une question");
     }
 
-    // Générer un mot de passe unique
-    let password: string;
-    let attempts = 0;
-    do {
-      password = generateSessionPassword();
-      const { data: existing } = await this.supabase
+    // `sessions.password` est UNIQUE sur toute la table (sessions terminées
+    // comprises) : on tente l'insertion et on retire un code en cas de
+    // collision, dans la limite de MAX_SESSION_CODE_ATTEMPTS.
+    // Même type que l'ancien insert direct (client Supabase non typé).
+    let session: any = null;
+    for (let attempt = 0; attempt < MAX_SESSION_CODE_ATTEMPTS; attempt++) {
+      const { data, error } = await this.supabase
         .from("sessions")
-        .select("id")
-        .eq("password", password)
-        .eq("status", "waiting")
+        .insert({
+          quiz_id: dto.quiz_id,
+          creator_id: creatorId,
+          password: generateSessionPassword(),
+          status: "waiting",
+          current_question_index: -1,
+          nickname_mode: dto.nicknameMode ?? "free",
+        })
+        .select()
         .single();
-      if (!existing) break;
-      attempts++;
-    } while (attempts < 10);
 
-    const { data: session, error } = await this.supabase
-      .from("sessions")
-      .insert({
-        quiz_id: dto.quiz_id,
-        creator_id: creatorId,
-        password,
-        status: "waiting",
-        current_question_index: -1,
-        nickname_mode: dto.nicknameMode ?? "free",
-      })
-      .select()
-      .single();
-
-    if (error) throw new Error(`Erreur création session: ${error.message}`);
+      if (!error) {
+        session = data;
+        break;
+      }
+      if (!isSessionCodeConflict(error)) {
+        throw new Error(`Erreur création session: ${error.message}`);
+      }
+    }
+    if (!session) {
+      throw new ServiceUnavailableException(
+        "Impossible de générer un code de session unique, veuillez réessayer.",
+      );
+    }
 
     return {
       ...session,
@@ -136,6 +170,26 @@ export class SessionService {
     return data;
   }
 
+  /**
+   * Supprime définitivement une session et toutes ses données (RGPD, issue #9).
+   * Réservé au créateur (404 sinon). Les participants et leurs réponses sont
+   * supprimés par la base grâce aux clés étrangères `ON DELETE CASCADE`
+   * (`participants.session_id`, `participant_answers.session_id` et
+   * `participant_answers.participant_id`, voir migrations/000_initial_schema.sql).
+   */
+  async deleteSession(sessionId: string, creatorId: string) {
+    await this.assertCreatorSession(sessionId, creatorId);
+
+    const { error } = await this.supabase
+      .from("sessions")
+      .delete()
+      .eq("id", sessionId)
+      .eq("creator_id", creatorId);
+
+    if (error) throw new Error(`Erreur suppression session: ${error.message}`);
+    return { id: sessionId, deleted: true };
+  }
+
   // ============================================================
   // REJOINDRE UNE SESSION (PARTICIPANT)
   // ============================================================
@@ -145,7 +199,7 @@ export class SessionService {
     const { data: session, error: sessionError } = await this.supabase
       .from("sessions")
       .select("id, status, quiz_id, quizzes(title, total_questions)")
-      .eq("password", dto.password.toUpperCase())
+      .eq("password", normalizeSessionCode(dto.password))
       .in("status", ["waiting", "active", "paused"])
       .single();
 
@@ -238,7 +292,7 @@ export class SessionService {
     const { data: session } = await this.supabase
       .from("sessions")
       .select("id, nickname_mode")
-      .eq("password", (code ?? "").trim().toUpperCase())
+      .eq("password", normalizeSessionCode(code ?? ""))
       .in("status", ["waiting", "active", "paused"])
       .single();
 
@@ -395,29 +449,83 @@ export class SessionService {
     }));
   }
 
-  /** Résultats finaux d'une session, réservés à son créateur. */
-  async getSessionResults(sessionId: string, creatorId: string) {
-    const session = await this.getSessionByCreator(sessionId, creatorId);
-    const participants = await this.getSessionParticipants(sessionId);
+  /**
+   * Résultats enrichis d'une session, réservés à son créateur (404 sinon).
+   * Contrat : voir `SessionResults` (issue #4).
+   */
+  async getSessionResults(
+    sessionId: string,
+    creatorId: string,
+  ): Promise<SessionResults> {
+    const { results } = await this.loadSessionResults(sessionId, creatorId);
+    return results;
+  }
 
-    // Récupérer toutes les réponses de la session
-    const { data: answers } = await this.supabase
-      .from("participant_answers")
-      .select("*")
-      .eq("session_id", sessionId);
-
-    const leaderboard = participants.map((p, index) => ({
-      rank: index + 1,
-      participant_id: p.id,
-      pseudo: p.pseudo,
-      score: p.score,
-    }));
-
+  /** Export CSV des résultats (`;`, UTF-8 avec BOM), réservé au créateur. */
+  async getSessionResultsCsv(
+    sessionId: string,
+    creatorId: string,
+  ): Promise<{ filename: string; csv: string }> {
+    const { results, answers } = await this.loadSessionResults(
+      sessionId,
+      creatorId,
+    );
     return {
-      session,
-      leaderboard,
-      total_answers: answers?.length || 0,
+      filename: resultsCsvFilename(results),
+      csv: buildResultsCsv(results, answers),
     };
+  }
+
+  private async loadSessionResults(sessionId: string, creatorId: string) {
+    // Contrôle de propriété avant toute autre lecture
+    const session = await this.getSessionByCreator(sessionId, creatorId);
+
+    const [questionsRes, participants, answers] = await Promise.all([
+      this.supabase
+        .from("questions")
+        .select("id, order_index, text, type, options, correct_answers")
+        .eq("quiz_id", session.quiz_id)
+        .order("order_index", { ascending: true }),
+      // Tous les participants, y compris déconnectés : ils ont joué.
+      // Lecture paginée (ordre stable : score puis id).
+      fetchAllRows<ResultsParticipantRow>((from, to) =>
+        this.supabase
+          .from("participants")
+          .select("id, pseudo, score")
+          .eq("session_id", sessionId)
+          .order("score", { ascending: false })
+          .order("id", { ascending: true })
+          .range(from, to),
+      ),
+      // Lecture paginée : une classe dépasse vite la limite de 1000 lignes
+      fetchAllRows<ResultsAnswerRow>((from, to) =>
+        this.supabase
+          .from("participant_answers")
+          .select(
+            "participant_id, question_id, answers, status, is_correct, time_taken_ms",
+          )
+          .eq("session_id", sessionId)
+          .order("id", { ascending: true })
+          .range(from, to),
+      ),
+    ]).catch((err: Error) => {
+      throw new Error(`Erreur lecture résultats: ${err.message}`);
+    });
+
+    if (questionsRes.error) {
+      throw new Error(
+        `Erreur lecture résultats: ${questionsRes.error.message}`,
+      );
+    }
+
+    const results = buildSessionResults({
+      session,
+      questions: (questionsRes.data ?? []) as ResultsQuestionRow[],
+      participants,
+      answers,
+    });
+
+    return { results, answers };
   }
 
   // ============================================================
