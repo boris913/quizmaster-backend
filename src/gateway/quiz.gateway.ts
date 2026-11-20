@@ -18,7 +18,10 @@ import {
   ASYNC_LIVE_FORBIDDEN,
   SessionService,
 } from "../session/session.service";
-import { ParticipantService } from "../participant/participant.service";
+import {
+  ANSWER_ALREADY_RECORDED,
+  ParticipantService,
+} from "../participant/participant.service";
 import { corsOriginCallback } from "../common/utils/cors.util";
 import { NICKNAME_ERRORS } from "../common/utils/nickname.util";
 import type {
@@ -609,6 +612,13 @@ export class QuizGateway implements OnGatewayConnection, OnGatewayDisconnect {
       // Tous les participants actifs ont répondu : clôture anticipée
       await this.closeQuestionIfAllAnswered(sessionId);
     } catch (error) {
+      // Course réponse/timeout : le timeout de la clôture est déjà enregistré
+      if (error.message === ANSWER_ALREADY_RECORDED) {
+        client.emit("answer:too_late", {
+          message: "Le temps est écoulé pour cette question",
+        });
+        return;
+      }
       this.logger.error(`Erreur answer:submit: ${error.message}`);
       client.emit("error", { message: error.message });
     }

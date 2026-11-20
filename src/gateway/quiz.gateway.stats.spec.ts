@@ -1,5 +1,9 @@
-import { Logger } from "@nestjs/common";
+import { ConflictException, Logger } from "@nestjs/common";
 import { createSupabaseMock, SupabaseMock } from "../test-utils/supabase.mock";
+import {
+  ANSWER_ALREADY_RECORDED,
+  ParticipantService,
+} from "../participant/participant.service";
 import { QuizGateway } from "./quiz.gateway";
 
 const OWNER = "user-owner";
@@ -248,6 +252,66 @@ describe("QuizGateway : clôture de question, stats et anti-triche (issue #6)", 
     const [result] = emitted("answer:result");
     expect(result.target).toBe("socket:sock-p1");
     expect(result.payload.correct_answers).toEqual([]);
+  });
+
+  describe("course réponse/timeout (index unique, migration 006)", () => {
+    it("réponse arrivée après le timeout inséré : answer:too_late, pas d'erreur, clôture complète", async () => {
+      await startQuestion();
+      participantService.submitAnswer.mockRejectedValueOnce(
+        new ConflictException(ANSWER_ALREADY_RECORDED),
+      );
+
+      await submit(player2, "p2", ["A"]);
+
+      expect(emitted("answer:too_late")).toEqual([
+        {
+          target: "socket:sock-p2",
+          event: "answer:too_late",
+          payload: { message: "Le temps est écoulé pour cette question" },
+        },
+      ]);
+      expect(emitted("error")).toHaveLength(0);
+      expect(emitted("answer:result")).toHaveLength(0);
+
+      await jest.advanceTimersByTimeAsync(20_000);
+
+      expect(participantService.processTimeouts).toHaveBeenCalledTimes(1);
+      expect(emitted("question:ended")).toHaveLength(1);
+      expect(emitted("question:stats")).toHaveLength(1);
+      expect(emitted("question:reveal")).toHaveLength(2);
+    });
+
+    it("échec de l'insertion des timeouts : stats et reveal tout de même émis", async () => {
+      // Vrai processTimeouts sur un mock dont l'upsert échoue
+      const db = createSupabaseMock();
+      db.mockResponse("participants", { data: [{ id: "p1" }, { id: "p2" }] })
+        .mockResponse("participant_answers", {
+          data: [{ participant_id: "p1" }],
+        })
+        .mockResponse("participant_answers", {
+          error: { code: "23505", message: "duplicate key" },
+        });
+      const real = new ParticipantService(db.client);
+      participantService.processTimeouts.mockImplementation(
+        (sessionId: string, questionId: string) =>
+          real.processTimeouts(sessionId, questionId),
+      );
+
+      await startQuestion();
+      await jest.advanceTimersByTimeAsync(20_000);
+
+      const upsert = db
+        .queriesFor("participant_answers")
+        .flatMap((q) => q.calls)
+        .find((c) => c.method === "upsert");
+      expect(upsert?.args[1]).toEqual({
+        onConflict: "participant_id,question_id",
+        ignoreDuplicates: true,
+      });
+      expect(emitted("question:ended")).toHaveLength(1);
+      expect(emitted("question:stats")).toHaveLength(1);
+      expect(emitted("question:reveal")).toHaveLength(2);
+    });
   });
 
   it("au timeout : question:stats (créateur) et question:reveal (joueurs) une seule fois", async () => {
