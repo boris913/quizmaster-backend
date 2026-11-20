@@ -17,6 +17,8 @@ export interface Question {
   max_points: number;
   timer_seconds: number;
   order_index: number;
+  /** Explication facultative (migration 003, issue #6). */
+  explanation?: string | null;
   created_at: string;
 }
 
@@ -105,7 +107,7 @@ export interface WsQuestionCountdownPayload {
 }
 
 export interface WsQuestionStartPayload {
-  question: Omit<Question, "correct_answers">; // Sans les réponses !
+  question: Omit<Question, "correct_answers" | "explanation">; // Sans les réponses !
   question_number: number;
   total_questions: number;
   timer_seconds: number;
@@ -116,6 +118,34 @@ export interface WsQuestionEndPayload {
   question_id: string;
   correct_answers: string[];
   leaderboard: LeaderboardEntry[];
+}
+
+/**
+ * "question:stats" (issue #6) : room créateur uniquement, une fois à la
+ * clôture de la question (timeout ou tous les participants actifs ont
+ * répondu). Participants "kicked" et "disconnected" exclus.
+ */
+export interface WsQuestionStatsPayload {
+  questionId: string;
+  /** Nombre de participants ayant coché chaque option (toutes les options présentes, 0 par défaut). */
+  distribution: Record<string, number>;
+  correctAnswers: string[];
+  /** Pourcentage entier (0-100) de bonnes réponses parmi totalParticipants. */
+  accuracy: number;
+  answeredCount: number;
+  totalParticipants: number;
+}
+
+/**
+ * "question:reveal" (issue #6) : envoyé à chaque joueur, une fois à la
+ * clôture. Seul événement joueur qui porte la bonne réponse et l'explication.
+ */
+export interface WsQuestionRevealPayload {
+  questionId: string;
+  correctAnswers: string[];
+  explanation: string | null;
+  yourAnswers: string[];
+  isCorrect: boolean;
 }
 
 // AMÉLIORATION AUDIT #3: Ajout des gaps dans le résultat
