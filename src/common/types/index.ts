@@ -2,8 +2,12 @@
 // Types globaux partagés dans tout le backend
 // ============================================================
 
+export type { QuestionType } from "../utils/question-types.util";
+import type { QuestionType } from "../utils/question-types.util";
+
 export interface QuizOption {
-  id: string; // 'A', 'B', 'C', 'D'
+  /** 'A'…'D' (single/multiple), 'A'…'F' (ordering/poll), 'true'/'false' (true_false). */
+  id: string;
   text: string;
 }
 
@@ -11,9 +15,14 @@ export interface Question {
   id: string;
   quiz_id: string;
   text: string;
-  type: "single" | "multiple";
+  /** Type de question (issue #7, migration 005). */
+  type: QuestionType;
+  /** `[]` pour une question short_answer. */
   options: QuizOption[];
+  /** Sémantique par type : voir `common/utils/question-types.util.ts`. */
   correct_answers: string[];
+  /** URL de l'image de la question (bucket `question-images`), sinon null. */
+  image_url?: string | null;
   max_points: number;
   timer_seconds: number;
   order_index: number;
@@ -111,7 +120,14 @@ export interface WsQuestionCountdownPayload {
 }
 
 export interface WsQuestionStartPayload {
-  question: Omit<Question, "correct_answers" | "explanation">; // Sans les réponses !
+  /**
+   * Liste blanche, sans `correct_answers` ni `explanation`. Pour `ordering`,
+   * options mélangées ; pour `short_answer`, `options: []`.
+   */
+  question: Pick<
+    Question,
+    "id" | "text" | "type" | "options" | "max_points" | "order_index"
+  > & { timer_seconds: number; image_url: string | null };
   question_number: number;
   total_questions: number;
   timer_seconds: number;
@@ -131,11 +147,24 @@ export interface WsQuestionEndPayload {
  */
 export interface WsQuestionStatsPayload {
   questionId: string;
-  /** Nombre de participants ayant coché chaque option (toutes les options présentes, 0 par défaut). */
+  /** Type de la question (issue #7). */
+  type: QuestionType;
+  /**
+   * Répartition des réponses (voir `buildAnswerDistribution`) :
+   * - single, multiple, true_false, poll : participants par id d'option
+   *   (toutes les options présentes, 0 par défaut) ;
+   * - ordering : `{}` ;
+   * - short_answer : participants par réponse normalisée (20 plus fréquentes).
+   */
   distribution: Record<string, number>;
   correctAnswers: string[];
-  /** Pourcentage entier (0-100) de bonnes réponses parmi totalParticipants. */
+  /**
+   * Pourcentage entier (0-100) de bonnes réponses parmi totalParticipants.
+   * Toujours 0 pour une question non notée (`graded: false`, poll).
+   */
   accuracy: number;
+  /** Faux pour un sondage (poll) : pas de bonne réponse, exclu des précisions. */
+  graded: boolean;
   answeredCount: number;
   totalParticipants: number;
 }
@@ -146,6 +175,10 @@ export interface WsQuestionStatsPayload {
  */
 export interface WsQuestionRevealPayload {
   questionId: string;
+  /** Type de la question (issue #7). */
+  type: QuestionType;
+  /** Faux pour un sondage (poll) : `isCorrect` vaut toujours false. */
+  graded: boolean;
   correctAnswers: string[];
   explanation: string | null;
   yourAnswers: string[];

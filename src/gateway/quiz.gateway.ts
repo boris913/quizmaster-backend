@@ -18,6 +18,11 @@ import { SessionService } from "../session/session.service";
 import { ParticipantService } from "../participant/participant.service";
 import { corsOriginCallback } from "../common/utils/cors.util";
 import { NICKNAME_ERRORS } from "../common/utils/nickname.util";
+import {
+  isGradedQuestionType,
+  QuestionType,
+  shuffleOrderingOptions,
+} from "../common/utils/question-types.util";
 import type {
   WsHiddenQuizFinishedPayload,
   WsPlayerScorePayload,
@@ -71,6 +76,8 @@ interface ActiveQuestionState {
   timerSeconds: number;
   questionStartTime: number;
   useGlobalTimer: boolean; // AMÉLIORATION AUDIT #4
+  /** Type de la question (issue #7). */
+  type: QuestionType;
   options: Array<{ id: string; text: string }>;
   correctAnswers: string[];
   explanation: string | null;
@@ -374,12 +381,25 @@ export class QuizGateway implements OnGatewayConnection, OnGatewayDisconnect {
         .neq("status", "kicked");
 
       // Préparer la question SANS les réponses correctes NI l'explication
-      // (liste blanche : ne jamais diffuser `question` tel quel aux joueurs)
+      // (liste blanche : ne jamais diffuser `question` tel quel aux joueurs).
+      // ordering (issue #7) : options mélangées, jamais dans l'ordre attendu ;
+      // short_answer : aucune option.
+      const questionType: QuestionType = question.type ?? "single";
+      const storedOptions = Array.isArray(question.options)
+        ? question.options
+        : [];
+      const correctAnswers: string[] = question.correct_answers || [];
       const sanitizedQuestion = {
         id: question.id,
         text: question.text,
-        type: question.type,
-        options: question.options,
+        type: questionType,
+        options:
+          questionType === "ordering"
+            ? shuffleOrderingOptions(storedOptions, correctAnswers)
+            : questionType === "short_answer"
+              ? []
+              : storedOptions,
+        image_url: question.image_url ?? null,
         max_points: question.max_points,
         timer_seconds: timerSeconds,
         order_index: question.order_index,
@@ -422,8 +442,9 @@ export class QuizGateway implements OnGatewayConnection, OnGatewayDisconnect {
         timerSeconds,
         questionStartTime,
         useGlobalTimer: quiz.use_global_timer,
-        options: Array.isArray(question.options) ? question.options : [],
-        correctAnswers: question.correct_answers || [],
+        type: questionType,
+        options: storedOptions,
+        correctAnswers,
         explanation: question.explanation ?? null,
         showLeaderboard: sessionDetails.show_leaderboard !== false,
       });
@@ -954,16 +975,20 @@ export class QuizGateway implements OnGatewayConnection, OnGatewayDisconnect {
         sessionId,
         {
           id: questionId,
+          type: activeQ.type,
           options: activeQ.options,
           correct_answers: activeQ.correctAnswers,
         },
       );
 
+      const graded = isGradedQuestionType(activeQ.type);
       const statsPayload: WsQuestionStatsPayload = {
         questionId,
+        type: activeQ.type,
         distribution: stats.distribution,
         correctAnswers: stats.correctAnswers,
-        accuracy: stats.accuracy,
+        accuracy: graded ? stats.accuracy : 0,
+        graded,
         answeredCount: stats.answeredCount,
         totalParticipants: stats.totalParticipants,
       };
@@ -982,10 +1007,12 @@ export class QuizGateway implements OnGatewayConnection, OnGatewayDisconnect {
         const own = stats.answersByParticipant.get(meta.participantId);
         const revealPayload: WsQuestionRevealPayload = {
           questionId,
+          type: activeQ.type,
+          graded,
           correctAnswers: activeQ.correctAnswers,
           explanation: activeQ.explanation,
           yourAnswers: own?.answers ?? [],
-          isCorrect: own?.isCorrect ?? false,
+          isCorrect: graded && (own?.isCorrect ?? false),
         };
         socket.emit("question:reveal", revealPayload);
       }
