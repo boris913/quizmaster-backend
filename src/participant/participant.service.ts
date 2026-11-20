@@ -171,7 +171,8 @@ export class ParticipantService {
       .from("participants")
       .select("id")
       .eq("session_id", sessionId)
-      .neq("status", "disconnected");
+      .neq("status", "disconnected")
+      .neq("status", "kicked");
 
     if (!participants) return;
 
@@ -221,6 +222,7 @@ export class ParticipantService {
       .select("id, pseudo, score")
       .eq("session_id", sessionId)
       .neq("status", "disconnected")
+      .neq("status", "kicked")
       .order("score", { ascending: false });
 
     if (!participants) return [];

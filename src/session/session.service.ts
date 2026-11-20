@@ -15,6 +15,11 @@ import {
   normalizeSessionCode,
 } from "../common/utils/scoring.util";
 import {
+  NICKNAME_ERRORS,
+  generateNicknameSuggestions,
+  getNicknameError,
+} from "../common/utils/nickname.util";
+import {
   buildSessionResults,
   ResultsAnswerRow,
   ResultsParticipantRow,
@@ -80,6 +85,7 @@ export class SessionService {
           password: generateSessionPassword(),
           status: "waiting",
           current_question_index: -1,
+          nickname_mode: dto.nicknameMode ?? "free",
         })
         .select()
         .single();
@@ -203,6 +209,8 @@ export class SessionService {
       );
     }
 
+    await this.assertNicknameAcceptable(session.id, dto.pseudo);
+
     // Vérifier unicité du pseudo dans cette session
     const { data: existingParticipant } = await this.supabase
       .from("participants")
@@ -246,6 +254,112 @@ export class SessionService {
   }
 
   // ============================================================
+  // MODÉRATION DES PSEUDOS (issue #5)
+  // ============================================================
+
+  /**
+   * Refuse un pseudo interdit (mode "free"), non issu du générateur (mode
+   * "generated") ou déjà exclu de cette session par le créateur.
+   */
+  async assertNicknameAcceptable(sessionId: string, pseudo: string) {
+    const { data: session } = await this.supabase
+      .from("sessions")
+      .select("nickname_mode")
+      .eq("id", sessionId)
+      .single();
+
+    const error = getNicknameError(pseudo, session?.nickname_mode);
+    if (error) throw new BadRequestException(error);
+
+    const { data: kicked } = await this.supabase
+      .from("participants")
+      .select("id")
+      .eq("session_id", sessionId)
+      .eq("status", "kicked")
+      .ilike("pseudo", escapeLikePattern(pseudo))
+      .limit(1);
+
+    if (kicked && kicked.length > 0) {
+      throw new ForbiddenException(NICKNAME_ERRORS.kicked);
+    }
+  }
+
+  /**
+   * Trois propositions de pseudo pour une session joignable, sans les pseudos
+   * déjà pris. Route publique : ne renvoie que le mode et les propositions.
+   */
+  async getNicknameSuggestions(code: string) {
+    const { data: session } = await this.supabase
+      .from("sessions")
+      .select("id, nickname_mode")
+      .eq("password", normalizeSessionCode(code ?? ""))
+      .in("status", ["waiting", "active", "paused"])
+      .single();
+
+    if (!session) {
+      throw new NotFoundException(
+        "Session introuvable ou terminée. Vérifiez le mot de passe.",
+      );
+    }
+
+    const { data: participants } = await this.supabase
+      .from("participants")
+      .select("pseudo")
+      .eq("session_id", session.id);
+
+    return {
+      nickname_mode: session.nickname_mode ?? "free",
+      suggestions: generateNicknameSuggestions(
+        3,
+        (participants || []).map((p) => p.pseudo),
+      ),
+    };
+  }
+
+  /**
+   * Contrôle d'un "participant:join" WebSocket : le participant doit exister
+   * dans cette session, ne pas être exclu, et son pseudo doit respecter le
+   * mode de la session.
+   */
+  async assertParticipantCanJoin(sessionId: string, participantId: string) {
+    const participant = await this.getParticipant(participantId);
+
+    if (participant.session_id !== sessionId) {
+      throw new ForbiddenException("Participant non trouvé dans cette session");
+    }
+    if (participant.status === "kicked") {
+      throw new ForbiddenException(NICKNAME_ERRORS.kicked);
+    }
+
+    const session = await this.getSessionWithDetails(sessionId);
+    const error = getNicknameError(participant.pseudo, session.nickname_mode);
+    if (error) throw new BadRequestException(error);
+
+    return participant;
+  }
+
+  /**
+   * Exclut un participant de la session (statut "kicked"). Le contrôle de
+   * propriété est fait par l'appelant (gateway). Renvoie le participant tel
+   * qu'il était avant l'exclusion.
+   */
+  async kickParticipant(sessionId: string, participantId: string) {
+    const participant = await this.getParticipant(participantId);
+
+    if (participant.session_id !== sessionId) {
+      throw new NotFoundException("Participant introuvable dans cette session");
+    }
+
+    const { error } = await this.supabase
+      .from("participants")
+      .update({ status: "kicked", socket_id: null })
+      .eq("id", participantId);
+
+    if (error) throw new Error(error.message);
+    return participant;
+  }
+
+  // ============================================================
   // AMÉLIORATION AUDIT #6: RECONNEXION D'UN PARTICIPANT
   // ============================================================
 
@@ -268,6 +382,10 @@ export class SessionService {
 
     if (participant.session_id !== sessionId) {
       throw new ForbiddenException("Participant non trouvé dans cette session");
+    }
+
+    if (participant.status === "kicked") {
+      throw new ForbiddenException(NICKNAME_ERRORS.kicked);
     }
 
     // Réactiver le participant s'il était déconnecté
@@ -309,6 +427,7 @@ export class SessionService {
       .select("id, pseudo, score, status, joined_at")
       .eq("session_id", sessionId)
       .neq("status", "disconnected")
+      .neq("status", "kicked")
       .order("score", { ascending: false });
 
     if (error) throw new Error(error.message);
@@ -505,4 +624,9 @@ export class SessionService {
       })
       .eq("id", participantId);
   }
+}
+
+/** Échappe `%`, `_` et `\` pour une comparaison ILIKE littérale. */
+function escapeLikePattern(value: string): string {
+  return value.replace(/[\\%_]/g, (c) => `\\${c}`);
 }

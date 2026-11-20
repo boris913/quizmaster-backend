@@ -5,12 +5,17 @@ import {
   Delete,
   Body,
   Param,
+  Query,
   UseGuards,
   Res,
 } from "@nestjs/common";
 import type { Response } from "express";
 import { SessionService } from "./session.service";
-import { CreateSessionDto, JoinSessionDto } from "./dto/session.dto";
+import {
+  CreateSessionDto,
+  JoinSessionDto,
+  NicknameSuggestionsQueryDto,
+} from "./dto/session.dto";
 import { JwtAuthGuard } from "../common/guards/jwt-auth.guard";
 import {
   CurrentUser,
@@ -30,6 +35,17 @@ export class SessionController {
   @Get()
   getCreatorSessions(@CurrentUser() user: JwtPayload) {
     return this.sessionService.getCreatorSessions(user.sub);
+  }
+
+  /**
+   * GET /api/sessions/join/nicknames?code=XXXXXX
+   * Trois propositions de pseudo pour la session (public). Déclarée avant
+   * les routes `:id` pour ne pas être capturée par elles.
+   */
+  @Public()
+  @Get("join/nicknames")
+  getNicknameSuggestions(@Query() query: NicknameSuggestionsQueryDto) {
+    return this.sessionService.getNicknameSuggestions(query.code);
   }
 
   /**

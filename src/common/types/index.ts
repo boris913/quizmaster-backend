@@ -39,6 +39,8 @@ export interface Session {
   password: string;
   status: "waiting" | "active" | "paused" | "finished";
   current_question_index: number;
+  /** Mode de choix des pseudos (issue #5). */
+  nickname_mode: "free" | "generated";
   question_start_time?: string;
   started_at?: string;
   ended_at?: string;
@@ -52,7 +54,13 @@ export interface Participant {
   session_id: string;
   pseudo: string;
   score: number;
-  status: "waiting" | "answering" | "answered" | "timeout" | "disconnected";
+  status:
+    | "waiting"
+    | "answering"
+    | "answered"
+    | "timeout"
+    | "disconnected"
+    | "kicked";
   socket_id?: string;
   joined_at: string;
 }
@@ -183,6 +191,27 @@ export interface WsSubmitAnswerPayload {
 
 export interface WsEndQuizPayload {
   sessionId: string;
+}
+
+// Exclusion d'un participant par le créateur (issue #5)
+export interface WsCreatorKickPayload {
+  sessionId: string;
+  participantId: string;
+}
+
+// ============================================================
+// MODÉRATION DES PSEUDOS (issue #5)
+// ============================================================
+
+/** Serveur → joueur exclu. */
+export interface WsParticipantKickedPayload {
+  reason: "kicked";
+}
+
+/** Réponse de GET /api/sessions/join/nicknames?code=... */
+export interface NicknameSuggestionsResponse {
+  nickname_mode: "free" | "generated";
+  suggestions: string[];
 }
 
 // ============================================================
