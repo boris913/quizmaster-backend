@@ -82,6 +82,8 @@ describe("buildSessionResults", () => {
       status: "finished",
       startedAt: "2026-11-19T09:00:00.000Z",
       endedAt: "2026-11-19T09:10:00.000Z",
+      mode: "live",
+      dueAt: null,
       participantCount: 2,
     });
   });
