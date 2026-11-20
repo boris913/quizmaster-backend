@@ -56,6 +56,15 @@ export class CreateQuestionDto {
   @Min(5)
   @Max(300)
   timer_seconds?: number;
+
+  /**
+   * Explication de la bonne réponse (issue #6). Envoyée aux joueurs
+   * uniquement à la clôture de la question ("question:reveal").
+   */
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  explanation?: string;
 }
 
 export class CreateQuizDto {

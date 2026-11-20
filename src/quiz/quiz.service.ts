@@ -13,6 +13,18 @@ import {
   ImportQuestionsDto,
 } from "./dto/quiz.dto";
 
+/** Longueur maximale d'une explication (DTO et contrainte SQL, migration 003). */
+export const EXPLANATION_MAX_LENGTH = 500;
+
+/** Ligne d'explication de l'import Markdown : "> Explication : texte". */
+const EXPLANATION_LINE = /^>\s*explication\s*:\s*(.*)$/i;
+
+/** Chaîne vide ou absente → null (colonne `questions.explanation`). */
+function normalizeExplanation(value: string | null | undefined): string | null {
+  const trimmed = typeof value === "string" ? value.trim() : "";
+  return trimmed ? trimmed : null;
+}
+
 @Injectable()
 export class QuizService {
   constructor(@Inject(SUPABASE_CLIENT) private supabase: SupabaseClient) {}
@@ -150,6 +162,7 @@ export class QuizService {
       correct_answers: q.correct_answers,
       max_points: q.max_points,
       timer_seconds: q.timer_seconds || 30,
+      explanation: normalizeExplanation(q.explanation),
       order_index: startIndex + index,
     }));
 
@@ -232,6 +245,7 @@ export class QuizService {
    * B) Proposition B
    * C) Proposition C
    * D) Proposition D
+   * > Explication : texte facultatif (≤ 500 caractères), révélé à la clôture
    */
   private parseMarkdownQuestions(
     questionsContent: string,
@@ -243,17 +257,27 @@ export class QuizService {
     let currentQuestion: Partial<CreateQuestionDto> | null = null;
     let currentOptions: Array<{ id: string; text: string }> = [];
     let currentCorrect: string[] = [];
+    let currentExplanation: string | null = null;
 
     const saveCurrentQuestion = () => {
       if (currentQuestion && currentOptions.length >= 2) {
-        questions.push({
+        const question: CreateQuestionDto = {
           text: currentQuestion.text!,
           type: currentCorrect.length > 1 ? "multiple" : "single",
           options: currentOptions,
           correct_answers: currentCorrect,
           max_points: currentQuestion.max_points || 100,
           timer_seconds: currentQuestion.timer_seconds || 30,
-        });
+        };
+        if (currentExplanation) {
+          if (currentExplanation.length > EXPLANATION_MAX_LENGTH) {
+            throw new BadRequestException(
+              `Question ${questions.length + 1} : l'explication dépasse ${EXPLANATION_MAX_LENGTH} caractères`,
+            );
+          }
+          question.explanation = currentExplanation;
+        }
+        questions.push(question);
       }
     };
 
@@ -272,6 +296,16 @@ export class QuizService {
         };
         currentOptions = [];
         currentCorrect = [];
+        currentExplanation = null;
+        continue;
+      }
+
+      // Explication : "> Explication : texte" (n'importe où sous la question)
+      const explanationMatch = line.match(EXPLANATION_LINE);
+      if (explanationMatch) {
+        if (currentQuestion) {
+          currentExplanation = normalizeExplanation(explanationMatch[1]);
+        }
         continue;
       }
 
