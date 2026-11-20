@@ -1,4 +1,4 @@
-# QuizMaster Backend
+# Kwizora Backend
 
 Backend NestJS pour l'application de quiz interactif en temps réel.
 

@@ -3,7 +3,7 @@
  *
  * Origines autorisées, par ordre de priorité :
  *   1. `CORS_ORIGINS` : liste séparée par des virgules
- *      (ex. `https://quizmaster.example.fr,https://www.quizmaster.example.fr`) ;
+ *      (ex. `https://kwizora.example.fr,https://www.kwizora.example.fr`) ;
  *   2. `FRONTEND_URL` : ancienne variable, conservée pour compatibilité ;
  *   3. à défaut (développement local) : `http://localhost:3000`.
  *
