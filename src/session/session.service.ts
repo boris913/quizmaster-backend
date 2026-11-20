@@ -14,6 +14,15 @@ import {
   generateSessionPassword,
   normalizeSessionCode,
 } from "../common/utils/scoring.util";
+import {
+  buildSessionResults,
+  ResultsAnswerRow,
+  ResultsParticipantRow,
+  ResultsQuestionRow,
+  SessionResults,
+} from "./results/session-results";
+import { buildResultsCsv, resultsCsvFilename } from "./results/results-csv";
+import { fetchAllRows } from "./results/fetch-all-rows";
 
 /** Nombre maximal de tirages pour obtenir un code de session unique. */
 export const MAX_SESSION_CODE_ATTEMPTS = 10;
@@ -301,29 +310,83 @@ export class SessionService {
     }));
   }
 
-  /** Résultats finaux d'une session, réservés à son créateur. */
-  async getSessionResults(sessionId: string, creatorId: string) {
-    const session = await this.getSessionByCreator(sessionId, creatorId);
-    const participants = await this.getSessionParticipants(sessionId);
+  /**
+   * Résultats enrichis d'une session, réservés à son créateur (404 sinon).
+   * Contrat : voir `SessionResults` (issue #4).
+   */
+  async getSessionResults(
+    sessionId: string,
+    creatorId: string,
+  ): Promise<SessionResults> {
+    const { results } = await this.loadSessionResults(sessionId, creatorId);
+    return results;
+  }
 
-    // Récupérer toutes les réponses de la session
-    const { data: answers } = await this.supabase
-      .from("participant_answers")
-      .select("*")
-      .eq("session_id", sessionId);
-
-    const leaderboard = participants.map((p, index) => ({
-      rank: index + 1,
-      participant_id: p.id,
-      pseudo: p.pseudo,
-      score: p.score,
-    }));
-
+  /** Export CSV des résultats (`;`, UTF-8 avec BOM), réservé au créateur. */
+  async getSessionResultsCsv(
+    sessionId: string,
+    creatorId: string,
+  ): Promise<{ filename: string; csv: string }> {
+    const { results, answers } = await this.loadSessionResults(
+      sessionId,
+      creatorId,
+    );
     return {
-      session,
-      leaderboard,
-      total_answers: answers?.length || 0,
+      filename: resultsCsvFilename(results),
+      csv: buildResultsCsv(results, answers),
     };
+  }
+
+  private async loadSessionResults(sessionId: string, creatorId: string) {
+    // Contrôle de propriété avant toute autre lecture
+    const session = await this.getSessionByCreator(sessionId, creatorId);
+
+    const [questionsRes, participants, answers] = await Promise.all([
+      this.supabase
+        .from("questions")
+        .select("id, order_index, text, type, options, correct_answers")
+        .eq("quiz_id", session.quiz_id)
+        .order("order_index", { ascending: true }),
+      // Tous les participants, y compris déconnectés : ils ont joué.
+      // Lecture paginée (ordre stable : score puis id).
+      fetchAllRows<ResultsParticipantRow>((from, to) =>
+        this.supabase
+          .from("participants")
+          .select("id, pseudo, score")
+          .eq("session_id", sessionId)
+          .order("score", { ascending: false })
+          .order("id", { ascending: true })
+          .range(from, to),
+      ),
+      // Lecture paginée : une classe dépasse vite la limite de 1000 lignes
+      fetchAllRows<ResultsAnswerRow>((from, to) =>
+        this.supabase
+          .from("participant_answers")
+          .select(
+            "participant_id, question_id, answers, status, is_correct, time_taken_ms",
+          )
+          .eq("session_id", sessionId)
+          .order("id", { ascending: true })
+          .range(from, to),
+      ),
+    ]).catch((err: Error) => {
+      throw new Error(`Erreur lecture résultats: ${err.message}`);
+    });
+
+    if (questionsRes.error) {
+      throw new Error(
+        `Erreur lecture résultats: ${questionsRes.error.message}`,
+      );
+    }
+
+    const results = buildSessionResults({
+      session,
+      questions: (questionsRes.data ?? []) as ResultsQuestionRow[],
+      participants,
+      answers,
+    });
+
+    return { results, answers };
   }
 
   // ============================================================

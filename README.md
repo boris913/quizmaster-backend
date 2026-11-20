@@ -161,9 +161,68 @@ src/
 | GET | `/api/sessions/:id` | JWT | Détail session |
 | GET | `/api/sessions/:id/participants` | JWT | Liste participants |
 | GET | `/api/sessions/:id/leaderboard` | JWT | Classement |
-| GET | `/api/sessions/:id/results` | JWT | Résultats finaux |
+| GET | `/api/sessions/:id/results` | JWT | Résultats enrichis (créateur seulement) |
+| GET | `/api/sessions/:id/results.csv` | JWT | Export CSV des résultats (créateur seulement) |
 | POST | `/api/sessions/join` | Public | Rejoindre (pseudo + password) |
 | DELETE | `/api/sessions/:id` | JWT | Terminer session |
+
+#### Résultats d'une session
+
+Réservés au créateur de la session : tout autre utilisateur (ou une session
+inexistante) reçoit **404**, pour ne pas révéler l'existence de la session.
+
+`GET /api/sessions/:id/results` :
+
+```jsonc
+{
+  "session": {
+    "id": "uuid", "quizTitle": "Géographie", "status": "finished",
+    "startedAt": "2026-11-19T09:00:00.000Z", "endedAt": "2026-11-19T09:10:00.000Z",
+    "participantCount": 2
+  },
+  "summary": { "accuracy": 0.5, "avgScore": 150, "completionRate": 0.5 },
+  "perQuestion": [{
+    "questionId": "uuid", "orderIndex": 0, "text": "Capitale de la France ?", "type": "single",
+    "accuracy": 0.5, "avgTimeMs": 3000,
+    "answerDistribution": { "A": 0, "B": 1, "C": 0, "D": 0 },
+    "correctAnswers": ["B"]
+  }],
+  "perParticipant": [{
+    "participantId": "uuid", "pseudo": "Alice", "score": 250,
+    "accuracy": 1, "answered": 1, "timeouts": 0, "avgTimeMs": 3000
+  }]
+}
+```
+
+Règles de calcul :
+
+- `accuracy` (0..1, 4 décimales) = réponses correctes / lignes de réponse ; un
+  timeout compte comme une réponse fausse. Les questions de type `poll`
+  (sondage, sans bonne réponse) sont exclues de toutes les précisions et ont
+  `accuracy: 0`.
+- `avgTimeMs` = moyenne des temps des réponses données (timeouts exclus),
+  arrondie à la milliseconde ; 0 sans réponse.
+- `answerDistribution` : nombre de participants ayant coché chaque option
+  (toutes les options du quiz sont présentes, à 0 si personne ne l'a choisie ;
+  en choix multiple, une réponse compte pour chaque option cochée).
+- `completionRate` = réponses données / (participants × questions jouées) ;
+  une question non atteinte (session arrêtée avant) n'est pas comptée.
+- `avgScore` : moyenne des scores des participants (2 décimales).
+- `perParticipant` est trié par score décroissant et inclut les participants
+  déconnectés.
+- Participants et réponses sont lus par pages de 1000 lignes (`.range()`,
+  ordre stable par `id`) : la limite `max-rows` de Supabase ne tronque pas le
+  rapport d'une grande classe.
+
+`GET /api/sessions/:id/results.csv` : fichier `text/csv; charset=utf-8`
+téléchargé en pièce jointe (`Content-Disposition: attachment;
+filename="resultats-<quiz>-<date>.csv"`). Séparateur `;`, UTF-8 avec BOM et
+virgule décimale (ouverture directe dans Excel en français). Une ligne par
+participant : rang, pseudo, score, précision (%), réponses, sans réponse,
+temps moyen (s), puis une colonne par question (options choisies et verdict).
+Les cellules contenant `;`, `"` ou un saut de ligne sont entre guillemets
+(guillemets doublés) ; celles commençant par `=`, `+`, `-` ou `@` sont
+préfixées d'une apostrophe (injection de formules).
 
 ---
 
