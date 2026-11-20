@@ -1,7 +1,7 @@
 {
-  "name": "quizmaster-backend",
+  "name": "kwizora-backend",
   "version": "1.0.0",
-  "description": "QuizMaster backend - NestJS + Socket.io + Supabase",
+  "description": "Kwizora backend - NestJS + Socket.io + Supabase",
   "author": "",
   "private": true,
   "license": "UNLICENSED",

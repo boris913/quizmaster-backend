@@ -1,9 +1,9 @@
-# Registre des activités de traitement — QuizMaster
+# Registre des activités de traitement — Kwizora
 
 > **Avertissement.** Ce document est un brouillon technique rédigé à partir du
 > code (issue #9). Ce n'est **pas un avis juridique**. Il doit être relu et
 > validé par un **délégué à la protection des données (DPO)** avant toute
-> communication présentant QuizMaster comme « conforme RGPD ». Les éléments
+> communication présentant Kwizora comme « conforme RGPD ». Les éléments
 > marqués **TODO** sont à compléter par le mainteneur.
 
 Dernière mise à jour technique : 2026-11-19 (migration `002_retention_purge.sql`).
@@ -12,7 +12,7 @@ Dernière mise à jour technique : 2026-11-19 (migration `002_retention_purge.sq
 
 | Rôle | Identité |
 |---|---|
-| Éditeur de QuizMaster | **TODO (mainteneur)** : nom / structure, adresse |
+| Éditeur de Kwizora | **TODO (mainteneur)** : nom / structure, adresse |
 | Contact protection des données | **TODO (mainteneur)** : adresse e-mail dédiée |
 | Responsable de traitement pour l'usage en classe | **TODO (DPO)** : à qualifier. Dans le cadre scolaire, le responsable est en général l'établissement ou l'autorité académique, l'éditeur intervenant alors comme sous-traitant (art. 28 RGPD). |
 | DPO compétent | **TODO** : DPO de l'académie / de l'établissement utilisateur |
