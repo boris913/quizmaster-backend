@@ -1,3 +1,5 @@
+import { randomInt } from "crypto";
+
 /**
  * Calcule les points obtenus pour une réponse.
  *
@@ -80,15 +82,34 @@ export function checkAnswer(
 }
 
 /**
- * Génère un mot de passe de session aléatoire (6 caractères alphanumériques).
+ * Alphabet des codes de session : majuscules et chiffres, sans les caractères
+ * visuellement ambigus `0 O 1 I L` (code recopié depuis un vidéoprojecteur).
+ */
+export const SESSION_CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+
+/** Longueur des codes de session. */
+export const SESSION_CODE_LENGTH = 6;
+
+/**
+ * Génère un code de session aléatoire de 6 caractères pris dans
+ * `SESSION_CODE_ALPHABET` (aléa cryptographique).
  */
 export function generateSessionPassword(): string {
-  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   let result = "";
-  for (let i = 0; i < 6; i++) {
-    result += chars.charAt(Math.floor(Math.random() * chars.length));
+  for (let i = 0; i < SESSION_CODE_LENGTH; i++) {
+    result += SESSION_CODE_ALPHABET[randomInt(SESSION_CODE_ALPHABET.length)];
   }
   return result;
+}
+
+/**
+ * Normalise un code de session saisi par un joueur : supprime tous les
+ * espaces (y compris en tête et en fin) et passe en majuscules.
+ * Aucun filtrage d'alphabet : les anciens codes (qui pouvaient contenir `L`)
+ * restent acceptés.
+ */
+export function normalizeSessionCode(code: string): string {
+  return code.trim().replace(/\s+/g, "").toUpperCase();
 }
 
 /**
