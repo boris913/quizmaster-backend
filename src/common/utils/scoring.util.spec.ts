@@ -4,6 +4,9 @@ import {
   checkAnswer,
   computeServerTimeTakenMs,
   generateSessionPassword,
+  normalizeSessionCode,
+  SESSION_CODE_ALPHABET,
+  SESSION_CODE_LENGTH,
 } from "./scoring.util";
 
 describe("calculatePoints", () => {
@@ -177,12 +180,35 @@ describe("checkAnswer", () => {
 });
 
 describe("generateSessionPassword", () => {
-  it("génère 6 caractères sans caractères ambigus (0, O, 1, I)", () => {
-    for (let i = 0; i < 50; i++) {
-      expect(generateSessionPassword()).toMatch(
-        /^[ABCDEFGHJKLMNPQRSTUVWXYZ2-9]{6}$/,
-      );
+  it("l'alphabet exclut les caractères ambigus 0, O, 1, I, L", () => {
+    for (const c of ["0", "O", "1", "I", "L"]) {
+      expect(SESSION_CODE_ALPHABET).not.toContain(c);
     }
+    expect(SESSION_CODE_ALPHABET).toMatch(/^[A-Z2-9]+$/);
+    expect(new Set(SESSION_CODE_ALPHABET).size).toBe(
+      SESSION_CODE_ALPHABET.length,
+    );
+  });
+
+  it("génère 6 caractères majuscules pris dans l'alphabet", () => {
+    for (let i = 0; i < 500; i++) {
+      const code = generateSessionPassword();
+      expect(code).toHaveLength(SESSION_CODE_LENGTH);
+      expect(SESSION_CODE_LENGTH).toBe(6);
+      expect(code).toMatch(/^[ABCDEFGHJKMNPQRSTUVWXYZ2-9]{6}$/);
+    }
+  });
+});
+
+describe("normalizeSessionCode", () => {
+  it("supprime les espaces et passe en majuscules", () => {
+    expect(normalizeSessionCode("  ab c 23 ")).toBe("ABC23");
+    expect(normalizeSessionCode("abc\t234\n")).toBe("ABC234");
+    expect(normalizeSessionCode("XyZ789")).toBe("XYZ789");
+  });
+
+  it("accepte les anciens codes contenant L (pas de filtrage d'alphabet)", () => {
+    expect(normalizeSessionCode("lmn 234")).toBe("LMN234");
   });
 });
 
