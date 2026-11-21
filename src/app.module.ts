@@ -7,6 +7,7 @@ import { ParticipantModule } from "./participant/participant.module";
 import { DatabaseModule } from "./database/database.module";
 import { GatewayModule } from "./gateway/gateway.module";
 import { AssignmentModule } from "./assignment/assignment.module";
+import { AiModule } from "./ai/ai.module";
 
 @Module({
   imports: [
@@ -21,6 +22,7 @@ import { AssignmentModule } from "./assignment/assignment.module";
     ParticipantModule,
     GatewayModule,
     AssignmentModule,
+    AiModule,
   ],
 })
 export class AppModule {}
