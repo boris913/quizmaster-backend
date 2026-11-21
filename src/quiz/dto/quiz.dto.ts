@@ -19,7 +19,7 @@ import {
   Max,
   ArrayMinSize,
 } from "class-validator";
-import { Type } from "class-transformer";
+import { Transform, Type } from "class-transformer";
 import {
   ALL_OPTION_IDS,
   QUESTION_TYPES,
@@ -28,6 +28,7 @@ import {
   SHORT_ANSWER_VARIANT_MAX_LENGTH,
   validateQuestionByType,
 } from "../../common/utils/question-types.util";
+import { IMPORT_FORMATS, ImportFormat } from "../importers/import.types";
 
 /** Types MIME acceptés pour une image de question (issue #7). */
 export const QUESTION_IMAGE_CONTENT_TYPES = [
@@ -218,11 +219,41 @@ export class UpdateQuizDto {
   use_global_timer?: boolean;
 }
 
+/**
+ * Corps JSON de `POST /api/quizzes/:id/import` (import Markdown). Facultatif
+ * avec `?format=...` et un fichier multipart (champ `file`).
+ */
 export class ImportQuestionsDto {
+  @IsOptional()
   @IsString()
-  questions_content: string;
+  questions_content?: string;
 
   @IsOptional()
   @IsString()
   answers_content?: string;
+}
+
+/**
+ * Paramètres de requête de `POST /api/quizzes/:id/import` (issue #12).
+ * Sans `format` : import Markdown historique (réponse = questions créées).
+ * Avec `format` : réponse `{ imported, errors, ... }` et `dryRun` possible.
+ */
+export class ImportQueryDto {
+  @IsOptional()
+  @IsIn(IMPORT_FORMATS, {
+    message: `format doit valoir ${IMPORT_FORMATS.join(", ")}`,
+  })
+  format?: ImportFormat;
+
+  /** `true` / `1` : analyse et validation sans rien enregistrer. */
+  @IsOptional()
+  @Transform(({ value }) =>
+    value === true || value === "true" || value === "1"
+      ? true
+      : value === false || value === "false" || value === "0"
+        ? false
+        : value,
+  )
+  @IsBoolean({ message: "dryRun doit valoir true ou false" })
+  dryRun?: boolean;
 }

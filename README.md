@@ -151,7 +151,13 @@ src/
 | POST | `/api/quizzes/:id/questions/image-upload-url` | URL signée d'upload d'une image (issue #7) |
 | DELETE | `/api/quizzes/:id/questions/:qId` | Supprimer une question |
 | POST | `/api/quizzes/:id/questions/reorder` | Réordonner |
-| POST | `/api/quizzes/:id/import` | Import Markdown |
+| POST | `/api/quizzes/:id/import` | Import Markdown (JSON) ; `?format=markdown\|csv\|xlsx\|kahoot[&dryRun=true]` + fichier multipart `file` (issue #12) |
+| GET | `/api/quizzes/import-template.csv` | Modèle CSV d'import (public) |
+| POST | `/api/quizzes/:id/duplicate` | Dupliquer un quiz (questions, ordre, images copiées) |
+| POST | `/api/quizzes/:id/share` | Créer / régénérer le lien de partage (`{ share_token }`) |
+| DELETE | `/api/quizzes/:id/share` | Révoquer le lien de partage |
+| GET | `/api/quizzes/shared/:token` | Aperçu public d'un quiz partagé (sans réponses ni explications) |
+| POST | `/api/quizzes/shared/:token/copy` | Copier un quiz partagé dans son compte |
 
 ### Types de question et images (issue #7)
 
@@ -487,6 +493,35 @@ A,B
 ```
 
 Ne s'applique qu'aux questions à choix (single/multiple).
+
+---
+
+## Import CSV / XLSX / Kahoot (issue #12)
+
+`POST /api/quizzes/:id/import?format=csv|xlsx|kahoot|markdown[&dryRun=true]`,
+corps `multipart/form-data` avec un champ `file` (2 Mo au plus, 200 lignes de
+données au plus). Chaque question passe la même validation que
+`POST /api/quizzes/:id/questions` ; les lignes valides sont importées, les
+autres listées dans `errors: [{ row, message }]` (`row` = numéro de ligne du
+tableur, en-tête = 1 ; pour markdown, numéro de question). `dryRun=true` :
+analyse seule, rien n'est enregistré.
+
+Modèle : `GET /api/quizzes/import-template.csv` (séparateur `;`, UTF-8 + BOM,
+un exemple par type). Colonnes : `type`, `question`, `option_a`…`option_f`,
+`bonnes_reponses`, `points`, `timer`, `explication`, `image_url`. Le même
+en-tête vaut pour un fichier XLSX (première feuille). CSV : séparateur `;`,
+`,` ou tabulation détecté, guillemets RFC 4180, UTF-8 (BOM facultatif) ou
+Windows-1252. XLSX : les formules ne sont jamais évaluées (dernière valeur
+enregistrée uniquement).
+
+`bonnes_reponses` : lettres (`B`, `A,C`) pour single/multiple ; `vrai`/`faux`
+pour true_false ; ordre attendu (`C,A,B`, vide = ordre des colonnes) pour
+ordering ; variantes séparées par `|` pour short_answer ; vide pour poll.
+
+Kahoot (`format=kahoot`, `.xlsx`) : modèle tableur de questions Kahoot (en-tête
+`Question - max 120 characters`, `Answer 1…4`, `Time limit (sec)`,
+`Correct answer(s)`, cherché dans les 30 premières lignes). **Format à
+confirmer sur un vrai export** (voir `src/quiz/importers/kahoot.importer.ts`).
 
 ---
 

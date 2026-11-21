@@ -6,15 +6,24 @@ import {
   Delete,
   Body,
   Param,
+  Query,
+  Res,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from "@nestjs/common";
-import { QuizService } from "./quiz.service";
+import { FileInterceptor } from "@nestjs/platform-express";
+import type { Response } from "express";
+import { QuizService, UploadedImportFile } from "./quiz.service";
+import { Public } from "../common/decorators/public.decorator";
+import { IMPORT_MAX_FILE_BYTES } from "./importers/import.types";
 import {
   CreateQuizDto,
   UpdateQuizDto,
   AddQuestionsDto,
   ImageUploadUrlDto,
   ImportQuestionsDto,
+  ImportQueryDto,
 } from "./dto/quiz.dto";
 import { JwtAuthGuard } from "../common/guards/jwt-auth.guard";
 import {
@@ -34,6 +43,44 @@ export class QuizController {
   @Get()
   getMyQuizzes(@CurrentUser() user: JwtPayload) {
     return this.quizService.getMyQuizzes(user.sub);
+  }
+
+  /**
+   * GET /api/quizzes/import-template.csv (public, issue #12)
+   * Modèle CSV d'import : séparateur `;`, UTF-8 + BOM, un exemple par type.
+   * Déclarée avant `:id` pour ne pas être capturée par cette route.
+   */
+  @Public()
+  @Get("import-template.csv")
+  getImportTemplate(@Res({ passthrough: true }) res: Response): string {
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader(
+      "Content-Disposition",
+      'attachment; filename="kwizora-modele-import.csv"',
+    );
+    return this.quizService.getImportTemplateCsv();
+  }
+
+  /**
+   * GET /api/quizzes/shared/:token (public, issue #12)
+   * Aperçu d'un quiz partagé, sans bonnes réponses ni explications.
+   */
+  @Public()
+  @Get("shared/:token")
+  getSharedQuiz(@Param("token") token: string) {
+    return this.quizService.getSharedQuiz(token);
+  }
+
+  /**
+   * POST /api/quizzes/shared/:token/copy (issue #12)
+   * Copie le quiz partagé dans le compte de l'utilisateur connecté.
+   */
+  @Post("shared/:token/copy")
+  copySharedQuiz(
+    @Param("token") token: string,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.quizService.copySharedQuiz(token, user.sub);
   }
 
   /**
@@ -74,6 +121,33 @@ export class QuizController {
   @Delete(":id")
   deleteQuiz(@Param("id") id: string, @CurrentUser() user: JwtPayload) {
     return this.quizService.deleteQuiz(id, user.sub);
+  }
+
+  /**
+   * POST /api/quizzes/:id/duplicate (issue #12)
+   * Duplique un quiz du créateur (questions, ordre, images copiées).
+   */
+  @Post(":id/duplicate")
+  duplicateQuiz(@Param("id") id: string, @CurrentUser() user: JwtPayload) {
+    return this.quizService.duplicateQuiz(id, user.sub);
+  }
+
+  /**
+   * POST /api/quizzes/:id/share (issue #12)
+   * Crée ou régénère le jeton de partage.
+   */
+  @Post(":id/share")
+  createShareLink(@Param("id") id: string, @CurrentUser() user: JwtPayload) {
+    return this.quizService.createShareLink(id, user.sub);
+  }
+
+  /**
+   * DELETE /api/quizzes/:id/share (issue #12)
+   * Révoque le lien de partage.
+   */
+  @Delete(":id/share")
+  revokeShareLink(@Param("id") id: string, @CurrentUser() user: JwtPayload) {
+    return this.quizService.revokeShareLink(id, user.sub);
   }
 
   /**
@@ -131,14 +205,26 @@ export class QuizController {
 
   /**
    * POST /api/quizzes/:id/import
-   * Importer des questions depuis un fichier Markdown
+   * - sans `format` : import Markdown historique (corps JSON
+   *   `{ questions_content, answers_content? }`, réponse = questions créées) ;
+   * - `?format=markdown|csv|xlsx|kahoot[&dryRun=true]` (issue #12) : fichier
+   *   multipart (champ `file`, 2 Mo au plus) ou, pour markdown, le corps JSON ;
+   *   réponse `{ format, dry_run, total_rows, valid, imported, questions,
+   *   errors: [{ row, message }] }`.
    */
   @Post(":id/import")
+  @UseInterceptors(
+    FileInterceptor("file", {
+      limits: { fileSize: IMPORT_MAX_FILE_BYTES, files: 1, fields: 10 },
+    }),
+  )
   importQuestions(
     @Param("id") id: string,
+    @Query() query: ImportQueryDto,
     @Body() dto: ImportQuestionsDto,
     @CurrentUser() user: JwtPayload,
+    @UploadedFile() file?: UploadedImportFile,
   ) {
-    return this.quizService.importFromMarkdown(id, user.sub, dto);
+    return this.quizService.importQuestions(id, user.sub, query, dto, file);
   }
 }
