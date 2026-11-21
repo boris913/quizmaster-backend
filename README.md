@@ -113,6 +113,13 @@ src/
 ├── gateway/
 │   ├── quiz.gateway.ts            # WebSocket (cœur temps réel)
 │   └── gateway.module.ts
+├── ai/                            # Génération de quiz par IA (issue #11)
+│   ├── ai.controller.ts           # POST /api/quizzes/generate, GET …/generate/quota
+│   ├── ai.service.ts              # Extraction, appel Claude, validation, erreurs
+│   ├── ai-quota.service.ts        # Quota mensuel (table ai_generations)
+│   ├── ai.prompt.ts               # Prompt système + schéma de sortie JSON
+│   ├── generated-questions.ts     # Validation par CreateQuestionDto
+│   └── pdf-text.ts                # Signature %PDF + extraction (unpdf)
 ├── common/
 │   ├── types/index.ts             # Interfaces TypeScript
 │   ├── utils/scoring.util.ts      # Calcul points, classement
@@ -152,6 +159,8 @@ src/
 | DELETE | `/api/quizzes/:id/questions/:qId` | Supprimer une question |
 | POST | `/api/quizzes/:id/questions/reorder` | Réordonner |
 | POST | `/api/quizzes/:id/import` | Import Markdown |
+| POST | `/api/quizzes/generate` | Brouillon de questions généré par IA depuis un texte ou un PDF (issue #11) |
+| GET | `/api/quizzes/generate/quota` | Quota mensuel de génération IA de l'utilisateur |
 
 ### Types de question et images (issue #7)
 
@@ -172,6 +181,56 @@ src/
   `public_url` renvoyée par `POST /api/quizzes/:id/questions/image-upload-url`
   (corps `{ content_type: "image/png"|"image/jpeg"|"image/webp"|"image/gif", size }`,
   2 Mo au plus). Configuration du bucket : `migrations/README.md`.
+
+### Génération de quiz par IA (issue #11)
+
+`POST /api/quizzes/generate` (JWT) génère un **brouillon** de questions à
+partir d'un cours. **Rien n'est enregistré** (hors compteur de quota) :
+l'enseignant relit le brouillon puis l'enregistre via `POST /api/quizzes` ou
+`POST /api/quizzes/:id/questions`.
+
+Requête `multipart/form-data` :
+
+| Champ | Obligatoire | Description |
+|-------|-------------|-------------|
+| `text` | `text` **ou** `file` | Texte du cours (200 000 caractères au plus) |
+| `file` | `text` **ou** `file` | PDF (`application/pdf`, signature `%PDF`, 10 Mo au plus) ; texte extrait côté serveur |
+| `level` | oui | Niveau de la classe, ex. `4e` (50 caractères au plus) |
+| `count` | oui | Nombre de questions, entier de 1 à 30 |
+| `types` | non | Types souhaités : champ répété (`types=single&types=true_false`), `types[]=…` ou liste séparée par des virgules. Valeurs : `single`, `multiple`, `true_false`, `ordering`, `short_answer` (défaut : `single`, `multiple`, `true_false`). `poll` n'est pas générable. |
+
+- Le texte (saisi ou extrait) est normalisé puis **tronqué à 60 000
+  caractères** (environ 15 000 jetons, début du document conservé) ; la
+  réponse l'indique (`source.truncated`). Minimum : 200 caractères.
+- Le modèle répond en sortie structurée (schéma JSON) ; chaque question est
+  ensuite validée par `CreateQuestionDto`, avec les mêmes options que
+  `POST /api/quizzes/:id/questions`. Les questions invalides, d'un type non
+  demandé, en double ou en surplus sont écartées et comptées (`rejected`).
+  `max_points` vaut 100 et `timer_seconds` 30 (modifiables avant
+  enregistrement).
+- Réponse 200 : `{ questions, requested, generated, rejected, source: { type,
+  chars, used_chars, truncated }, model, quota: { limit, used, remaining,
+  resets_at } }`.
+- Erreurs : 400 (champs invalides, ni texte ni PDF, ou les deux), 401, 413
+  (PDF > 10 Mo), 415 (pas un PDF : type MIME ou signature), 422 (contenu trop
+  court, PDF illisible ou sans texte extractible, refus du modèle), 429
+  (quota atteint, détail dans `quota`), 502 (sortie de l'IA illisible ou sans
+  question valide), 503 (clé absente ou fournisseur indisponible), 504 (délai
+  d'attente dépassé).
+- **Quota** : `AI_MONTHLY_QUOTA` générations par enseignant et par mois
+  civil UTC (3 par défaut), table `ai_generations` (migration 008). Une
+  génération qui échoue ne consomme pas de quota.
+- Seul le contenu pédagogique est envoyé à Anthropic (aucune donnée élève) :
+  voir [docs/registre-traitement.md](docs/registre-traitement.md).
+
+Variables d'environnement :
+
+| Variable | Défaut | Rôle |
+|----------|--------|------|
+| `ANTHROPIC_API_KEY` | — | Clé de l'API Claude, côté serveur uniquement. Absente : l'application démarre, l'endpoint répond 503. |
+| `AI_MODEL` | `claude-sonnet-5-5` | Modèle utilisé (`claude-haiku-5-5` pour réduire le coût) |
+| `AI_MONTHLY_QUOTA` | `3` | Générations par enseignant et par mois |
+| `AI_TIMEOUT_MS` | `120000` | Délai d'attente d'un appel (SDK, 1 nouvelle tentative au plus) |
 
 ### Sessions
 

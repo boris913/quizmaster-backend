@@ -6,7 +6,8 @@
 > communication présentant Kwizora comme « conforme RGPD ». Les éléments
 > marqués **TODO** sont à compléter par le mainteneur.
 
-Dernière mise à jour technique : 2026-11-19 (migration `002_retention_purge.sql`).
+Dernière mise à jour technique : 2026-11-20 (migration `008_ai_generations.sql`,
+génération de quiz par IA, issue #11).
 
 ## 1. Responsable du traitement et contacts
 
@@ -79,7 +80,25 @@ cookie publicitaire.
 Code d'accès à la session, statut, dates de début / fin, date d'anonymisation
 (`anonymized_at`).
 
-### 4.5 Journaux techniques
+### 4.5 Génération de quiz par IA (table `ai_generations`, issue #11)
+
+`POST /api/quizzes/generate` envoie au fournisseur d'IA (Anthropic, API
+Claude) **uniquement le contenu pédagogique fourni par l'enseignant** : le
+texte collé ou le texte extrait côté serveur de son PDF de cours (60 000
+caractères au plus), le niveau de classe, le nombre et les types de questions
+souhaités. Le PDF lui-même n'est pas transmis.
+
+- **Aucune donnée élève** n'est envoyée (ni pseudo, ni réponse, ni score) ;
+  aucun identifiant d'enseignant n'est transmis au fournisseur.
+- L'enseignant ne doit pas soumettre de document contenant des données
+  personnelles (copies d'élèves nominatives, etc.) : l'interface doit le
+  rappeler.
+- Rien n'est enregistré par Kwizora à part une ligne de quota par
+  génération : `user_id`, date, nombre de questions (table `ai_generations`).
+  Ni le cours ni les questions générées ne sont stockés : le brouillon est
+  renvoyé à l'enseignant, qui l'enregistre lui-même via le CRUD habituel.
+
+### 4.6 Journaux techniques
 
 Le backend journalise des événements techniques (connexion/déconnexion de
 socket, identifiants de session et de participant, pseudo de l'enseignant qui
@@ -96,6 +115,8 @@ l'hébergeur (voir [hebergement.md](hebergement.md)).
 | Session complète (participants + réponses) | jusqu'à suppression par l'enseignant | `DELETE /api/sessions/:id` : suppression définitive en cascade |
 | Quiz et questions | jusqu'à suppression par l'enseignant | `DELETE /api/quizzes/:id` (cascade sur questions et sessions) |
 | Compte enseignant | **TODO (mainteneur)** : durée d'inactivité avant suppression, procédure de suppression de compte (pas d'endpoint à ce jour) | — |
+| Quota de génération IA (`ai_generations` : utilisateur, date, nombre de questions) | jusqu'à suppression du compte enseignant (cascade) | **TODO (mainteneur)** : purge possible des lignes de plus de 12 mois |
+| Contenu envoyé au fournisseur d'IA | non conservé par Kwizora ; conservation chez le fournisseur selon ses conditions | **TODO (mainteneur)** : vérifier la durée de conservation de l'API Anthropic et l'option de non-conservation (ZDR) |
 | Journaux techniques | **TODO (mainteneur)** : selon l'hébergeur | — |
 | Sauvegardes de la base | **TODO (mainteneur)** : durée de rétention des sauvegardes Supabase selon l'offre | — |
 
@@ -122,6 +143,7 @@ Remarques :
 | Supabase | base de données PostgreSQL | **TODO (mainteneur)** : région du projet Supabase | **TODO** : DPA Supabase, mécanisme de transfert si hors UE |
 | Hébergeur du backend (NestJS) | exécution de l'API et du temps réel | **TODO (mainteneur)** | **TODO** |
 | Hébergeur du frontend (Next.js) | diffusion de l'interface | **TODO (mainteneur)** | **TODO** |
+| Anthropic (API Claude) | génération de brouillons de quiz à partir du cours fourni par l'enseignant (`POST /api/quizzes/generate`). **Aucune donnée élève.** | États-Unis | **TODO (mainteneur/DPO)** : DPA Anthropic (conditions commerciales de l'API), mécanisme de transfert hors UE (clauses contractuelles types / Data Privacy Framework), durée de conservation des requêtes |
 
 Détails et procédure de vérification : [hebergement.md](hebergement.md).
 
@@ -138,6 +160,9 @@ Détails et procédure de vérification : [hebergement.md](hebergement.md).
 - CORS restreint aux origines du frontend (`CORS_ORIGINS`), pour l'API HTTP et
   pour Socket.io.
 - Temps de réponse et score calculés côté serveur.
+- Clé du fournisseur d'IA (`ANTHROPIC_API_KEY`) uniquement côté serveur,
+  jamais renvoyée par l'API ni journalisée ; PDF contrôlés (type MIME,
+  signature `%PDF`, 10 Mo au plus) avant extraction du texte.
 - **TODO (mainteneur)** : HTTPS imposé chez l'hébergeur, gestion des accès au
   tableau de bord Supabase (MFA), procédure en cas de violation de données.
 
