@@ -1,6 +1,7 @@
 import { NestFactory } from "@nestjs/core";
 import { Logger, ValidationPipe } from "@nestjs/common";
 import { AppModule } from "./app.module";
+import { GLOBAL_VALIDATION_OPTIONS } from "./common/validation";
 import {
   corsOriginCallback,
   getAllowedOrigins,
@@ -29,13 +30,7 @@ async function bootstrap() {
   });
 
   // Validation globale des DTOs
-  app.useGlobalPipes(
-    new ValidationPipe({
-      whitelist: true,
-      forbidNonWhitelisted: true,
-      transform: true,
-    }),
-  );
+  app.useGlobalPipes(new ValidationPipe(GLOBAL_VALIDATION_OPTIONS));
 
   // Prefix global API
   app.setGlobalPrefix("api");
