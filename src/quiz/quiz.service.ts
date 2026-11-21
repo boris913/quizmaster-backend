@@ -3,6 +3,9 @@ import {
   Inject,
   NotFoundException,
   BadRequestException,
+  PayloadTooLargeException,
+  UnsupportedMediaTypeException,
+  Logger,
 } from "@nestjs/common";
 import { SupabaseClient } from "@supabase/supabase-js";
 import { SUPABASE_CLIENT } from "../database/database.module";
@@ -11,12 +14,13 @@ import {
   UpdateQuizDto,
   CreateQuestionDto,
   ImportQuestionsDto,
+  ImportQueryDto,
   ImageUploadUrlDto,
   IMAGE_URL_MAX_LENGTH,
   QUESTION_IMAGE_CONTENT_TYPES,
   QUESTION_IMAGE_MAX_BYTES,
 } from "./dto/quiz.dto";
-import { randomUUID } from "crypto";
+import { randomBytes, randomUUID } from "crypto";
 import {
   DEFAULT_TRUE_FALSE_OPTIONS,
   QUESTION_TYPES,
@@ -25,6 +29,24 @@ import {
   scrambleOrderingIds,
   validateQuestionByType,
 } from "../common/utils/question-types.util";
+import { toCsv } from "../session/results/results-csv";
+import { validateQuestionPlain } from "./question-validation";
+import { decodeTextFile, parseCsv } from "./importers/csv.parser";
+import {
+  IMPORT_MAX_FILE_BYTES,
+  IMPORT_MAX_ROWS,
+  ImportFileError,
+  ImportFormat,
+  ImportRowError,
+  ParsedImport,
+} from "./importers/import.types";
+import { parseKahootRows } from "./importers/kahoot.importer";
+import {
+  TEMPLATE_EXAMPLES,
+  TEMPLATE_HEADERS,
+  parseTabularRows,
+} from "./importers/tabular.importer";
+import { readXlsxRows } from "./importers/xlsx.reader";
 
 /** Bucket Supabase Storage des images de question (issue #7). */
 export const QUESTION_IMAGES_BUCKET = "question-images";
@@ -36,6 +58,35 @@ const IMAGE_EXTENSIONS: Record<string, string> = {
   "image/webp": "webp",
   "image/gif": "gif",
 };
+
+/** Jeton de partage : 24 octets aléatoires → 32 caractères base64url. */
+export const SHARE_TOKEN_BYTES = 24;
+export const SHARE_TOKEN_PATTERN = /^[A-Za-z0-9_-]{32}$/;
+
+/** Chemin d'une image dans le bucket : `<quizId>/<uuid>.<ext>`. */
+const BUCKET_IMAGE_PATH = /^[0-9a-f-]{36}\/[0-9a-f-]{36}\.(png|jpg|jpeg|webp|gif)$/i;
+
+/** Extensions de fichier acceptées par format d'import (si le nom en a une). */
+const IMPORT_EXTENSIONS: Record<ImportFormat, string[]> = {
+  markdown: ["md", "markdown", "txt"],
+  csv: ["csv", "txt"],
+  xlsx: ["xlsx"],
+  kahoot: ["xlsx"],
+};
+
+/** Fichier reçu en multipart (sous-ensemble de `Express.Multer.File`). */
+export interface UploadedImportFile {
+  buffer: Buffer;
+  size: number;
+  originalname?: string;
+  mimetype?: string;
+}
+
+/** Avertissement de copie (question non copiée ou image non copiée). */
+export interface CopyWarning {
+  question_number: number;
+  message: string;
+}
 
 /** Durée de validité d'une URL signée d'upload Supabase (fixée par Supabase). */
 export const SIGNED_UPLOAD_URL_TTL_SECONDS = 2 * 60 * 60;
@@ -121,6 +172,8 @@ function normalizeAnswersByType(q: CreateQuestionDto): {
 
 @Injectable()
 export class QuizService {
+  private readonly logger = new Logger(QuizService.name);
+
   constructor(@Inject(SUPABASE_CLIENT) private supabase: SupabaseClient) {}
 
   // ============================================================
@@ -224,7 +277,17 @@ export class QuizService {
     questions: CreateQuestionDto[],
   ) {
     await this.assertOwnership(quizId, creatorId);
+    return this.insertQuestions(quizId, questions);
+  }
 
+  /**
+   * Insère des questions à la suite de celles du quiz (propriété déjà
+   * vérifiée par l'appelant). Règles par type et URL d'image revérifiées.
+   */
+  private async insertQuestions(
+    quizId: string,
+    questions: CreateQuestionDto[],
+  ) {
     // Récupérer l'index courant pour continuer la numérotation
     const { data: existing } = await this.supabase
       .from("questions")
@@ -612,6 +675,478 @@ export class QuizService {
         questions[index].type = answers.length > 1 ? "multiple" : "single";
       }
     });
+  }
+
+  // ============================================================
+  // DUPLICATION ET PARTAGE (issue #12)
+  // ============================================================
+
+  /**
+   * POST /api/quizzes/:id/duplicate : copie complète d'un quiz de
+   * l'utilisateur (questions dans le même ordre, images copiées dans le
+   * dossier du nouveau quiz). Titre suffixé de « (copie) ».
+   */
+  async duplicateQuiz(quizId: string, userId: string) {
+    const { data: source } = await this.supabase
+      .from("quizzes")
+      .select("*")
+      .eq("id", quizId)
+      .single();
+    if (!source || !userId || source.creator_id !== userId) {
+      throw new NotFoundException("Quiz introuvable");
+    }
+    const suffix = " (copie)";
+    const title = `${String(source.title).slice(0, 200 - suffix.length)}${suffix}`;
+    return this.copyQuiz(source, userId, title);
+  }
+
+  /**
+   * POST /api/quizzes/:id/share : crée ou régénère le jeton de partage
+   * (l'ancien lien cesse aussitôt de fonctionner).
+   */
+  async createShareLink(quizId: string, userId: string) {
+    await this.assertOwnership(quizId, userId);
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const token = randomBytes(SHARE_TOKEN_BYTES).toString("base64url");
+      const { error } = await this.supabase
+        .from("quizzes")
+        .update({ share_token: token })
+        .eq("id", quizId);
+      if (!error) return { share_token: token };
+      // 23505 : collision de jeton (improbable), on régénère
+      if (error.code !== "23505") {
+        throw new Error(`Erreur création du lien de partage: ${error.message}`);
+      }
+    }
+    throw new Error("Erreur création du lien de partage: collisions répétées");
+  }
+
+  /** DELETE /api/quizzes/:id/share : révoque le lien de partage. */
+  async revokeShareLink(quizId: string, userId: string) {
+    await this.assertOwnership(quizId, userId);
+    const { error } = await this.supabase
+      .from("quizzes")
+      .update({ share_token: null })
+      .eq("id", quizId);
+    if (error) {
+      throw new Error(`Erreur révocation du lien de partage: ${error.message}`);
+    }
+    return { share_token: null };
+  }
+
+  /**
+   * GET /api/quizzes/shared/:token (public) : aperçu d'un quiz partagé.
+   * Ni bonnes réponses ni explications : ces colonnes ne sont même pas lues.
+   * Jeton inconnu, révoqué ou mal formé → 404.
+   */
+  async getSharedQuiz(token: string) {
+    const quiz = await this.findSharedQuiz(
+      token,
+      "id, title, description, global_timer_seconds, use_global_timer, created_at",
+    );
+    const { data: questions, error } = await this.supabase
+      .from("questions")
+      .select(
+        "text, type, options, image_url, max_points, timer_seconds, order_index",
+      )
+      .eq("quiz_id", quiz.id)
+      .order("order_index", { ascending: true });
+    if (error) throw new Error(`Erreur aperçu du quiz: ${error.message}`);
+
+    const list = (questions ?? []).map(
+      (q: Record<string, unknown>, i: number) => ({
+        position: i + 1,
+        text: q.text,
+        type: q.type,
+        options: Array.isArray(q.options)
+          ? (q.options as { id: string; text: string }[]).map((o) => ({
+              id: o.id,
+              text: o.text,
+            }))
+          : [],
+        image_url: q.image_url ?? null,
+        max_points: q.max_points,
+        timer_seconds: q.timer_seconds,
+      }),
+    );
+    return {
+      title: quiz.title,
+      description: quiz.description ?? null,
+      global_timer_seconds: quiz.global_timer_seconds,
+      use_global_timer: quiz.use_global_timer,
+      created_at: quiz.created_at,
+      question_count: list.length,
+      questions: list,
+    };
+  }
+
+  /**
+   * POST /api/quizzes/shared/:token/copy : copie un quiz partagé dans le
+   * compte de l'utilisateur connecté (copie indépendante de l'original).
+   */
+  async copySharedQuiz(token: string, userId: string) {
+    const source = await this.findSharedQuiz(token, "*");
+    return this.copyQuiz(source, userId, String(source.title));
+  }
+
+  private async findSharedQuiz(token: string, columns: string) {
+    if (typeof token !== "string" || !SHARE_TOKEN_PATTERN.test(token)) {
+      throw new NotFoundException("Lien de partage invalide ou révoqué");
+    }
+    const { data } = await this.supabase
+      .from("quizzes")
+      .select(columns)
+      .eq("share_token", token)
+      .maybeSingle();
+    if (!data) {
+      throw new NotFoundException("Lien de partage invalide ou révoqué");
+    }
+    return data as unknown as Record<string, any>;
+  }
+
+  /**
+   * Copie un quiz (ligne `quizzes` complète) pour `ownerId` :
+   * - chaque question repasse par la validation de `CreateQuestionDto` (une
+   *   question invalide n'est pas copiée et est signalée) ;
+   * - les ids d'une question `ordering` sont réattribués comme à toute
+   *   création, avec `correct_answers` traduit (question jouable) ;
+   * - les images du bucket sont copiées dans `<nouveauQuiz>/<uuid>.<ext>` ;
+   *   si la copie échoue, la question est gardée sans image et signalée ;
+   *   une image externe (hors bucket) garde son URL.
+   */
+  private async copyQuiz(
+    source: Record<string, any>,
+    ownerId: string,
+    title: string,
+  ): Promise<{ quiz: Record<string, unknown>; warnings: CopyWarning[] }> {
+    const { data: rows, error: questionsError } = await this.supabase
+      .from("questions")
+      .select("*")
+      .eq("quiz_id", source.id)
+      .order("order_index", { ascending: true });
+    if (questionsError) {
+      throw new Error(
+        `Erreur lecture des questions: ${questionsError.message}`,
+      );
+    }
+
+    const warnings: CopyWarning[] = [];
+    const prepared: { number: number; question: CreateQuestionDto }[] = [];
+    for (const [index, row] of (rows ?? []).entries()) {
+      const plain: Record<string, unknown> = {
+        text: row.text,
+        type: row.type,
+        options: Array.isArray(row.options)
+          ? row.options.map((o: { id: string; text: string }) => ({
+              id: o.id,
+              text: o.text,
+            }))
+          : [],
+        correct_answers: Array.isArray(row.correct_answers)
+          ? [...row.correct_answers]
+          : [],
+        max_points: row.max_points,
+        timer_seconds: row.timer_seconds,
+      };
+      if (row.explanation) plain.explanation = row.explanation;
+      if (row.image_url) plain.image_url = row.image_url;
+      const result = await validateQuestionPlain(plain);
+      if (result.ok === false) {
+        warnings.push({
+          question_number: index + 1,
+          message: `question non copiée : ${result.errors.join(" ; ")}`,
+        });
+        continue;
+      }
+      prepared.push({ number: index + 1, question: result.question });
+    }
+
+    const { data: quiz, error } = await this.supabase
+      .from("quizzes")
+      .insert({
+        creator_id: ownerId,
+        title,
+        description: source.description ?? null,
+        global_timer_seconds: source.global_timer_seconds,
+        use_global_timer: source.use_global_timer,
+        source_quiz_id: source.id,
+      })
+      .select()
+      .single();
+    if (error || !quiz) {
+      throw new Error(
+        `Erreur copie du quiz: ${error?.message ?? "réponse vide"}`,
+      );
+    }
+
+    const copiedPaths: string[] = [];
+    for (const item of prepared) {
+      const url = item.question.image_url;
+      if (!url) continue;
+      const copy = await this.copyQuestionImage(url, quiz.id);
+      if (copy.kind === "copied") {
+        item.question.image_url = copy.url;
+        copiedPaths.push(copy.path);
+      } else if (copy.kind === "failed") {
+        delete item.question.image_url;
+        warnings.push({
+          question_number: item.number,
+          message: `image non copiée (${copy.reason}) : question copiée sans image`,
+        });
+      }
+    }
+
+    if (prepared.length > 0) {
+      try {
+        await this.insertQuestions(
+          quiz.id,
+          prepared.map((p) => p.question),
+        );
+      } catch (e) {
+        // Pas de quiz à moitié copié : on retire le quiz et les images
+        await this.supabase.from("quizzes").delete().eq("id", quiz.id);
+        if (copiedPaths.length > 0) {
+          try {
+            await this.supabase.storage
+              .from(QUESTION_IMAGES_BUCKET)
+              .remove(copiedPaths);
+          } catch {
+            // Nettoyage best effort : des fichiers orphelins sans lien
+          }
+        }
+        throw e;
+      }
+    }
+
+    return { quiz: await this.getQuizById(quiz.id, ownerId), warnings };
+  }
+
+  /**
+   * Copie côté serveur (client service) d'une image du bucket vers le
+   * dossier du quiz `targetQuizId`. `external` : URL hors bucket, rien à
+   * copier.
+   */
+  private async copyQuestionImage(
+    url: string,
+    targetQuizId: string,
+  ): Promise<
+    | { kind: "external" }
+    | { kind: "copied"; url: string; path: string }
+    | { kind: "failed"; reason: string }
+  > {
+    try {
+      const bucket = this.supabase.storage.from(QUESTION_IMAGES_BUCKET);
+      const probe = bucket.getPublicUrl("x").data.publicUrl;
+      const prefix = probe.slice(0, -1);
+      const bare = url.split(/[?#]/)[0];
+      if (!bare.startsWith(prefix)) return { kind: "external" };
+      const path = decodeURIComponent(bare.slice(prefix.length));
+      if (!BUCKET_IMAGE_PATH.test(path)) {
+        return { kind: "failed", reason: "chemin d'image inattendu" };
+      }
+      const ext = path.split(".").pop()!.toLowerCase();
+      const target = `${targetQuizId}/${randomUUID()}.${ext}`;
+      const { error } = await bucket.copy(path, target);
+      if (error) {
+        this.logger.warn(`Copie d'image ${path} échouée : ${error.message}`);
+        return { kind: "failed", reason: "copie refusée par le stockage" };
+      }
+      return {
+        kind: "copied",
+        url: bucket.getPublicUrl(target).data.publicUrl,
+        path: target,
+      };
+    } catch (e) {
+      this.logger.warn(`Copie d'image échouée : ${(e as Error).message}`);
+      return { kind: "failed", reason: "erreur du stockage" };
+    }
+  }
+
+  // ============================================================
+  // IMPORT CSV / XLSX / KAHOOT (issue #12)
+  // ============================================================
+
+  /** GET /api/quizzes/import-template.csv : modèle d'import (`;`, UTF-8 + BOM). */
+  getImportTemplateCsv(): string {
+    return toCsv([[...TEMPLATE_HEADERS], ...TEMPLATE_EXAMPLES]);
+  }
+
+  /**
+   * POST /api/quizzes/:id/import. Sans `format` : import Markdown historique
+   * (corps JSON, réponse = questions créées). Avec `format` : analyse du
+   * fichier, validation de chaque question comme
+   * `POST /api/quizzes/:id/questions`, puis (hors `dryRun`) insertion des
+   * questions valides ; les lignes invalides sont listées dans `errors`.
+   */
+  async importQuestions(
+    quizId: string,
+    userId: string,
+    query: ImportQueryDto,
+    body: ImportQuestionsDto | undefined,
+    file?: UploadedImportFile,
+  ) {
+    if (!query?.format) {
+      if (file) {
+        throw new BadRequestException(
+          "Paramètre format requis pour importer un fichier (markdown, csv, xlsx, kahoot)",
+        );
+      }
+      if (typeof body?.questions_content !== "string") {
+        throw new BadRequestException("questions_content requis");
+      }
+      return this.importFromMarkdown(quizId, userId, body);
+    }
+
+    await this.assertOwnership(quizId, userId);
+    const format = query.format;
+    const dryRun = query.dryRun === true;
+
+    let parsed: ParsedImport;
+    try {
+      parsed = await this.parseImportFile(format, body, file);
+    } catch (e) {
+      if (e instanceof ImportFileError) {
+        if (e.kind === "too_large") {
+          throw new PayloadTooLargeException(e.message);
+        }
+        if (e.kind === "unsupported_type") {
+          throw new UnsupportedMediaTypeException(e.message);
+        }
+        throw new BadRequestException(e.message);
+      }
+      throw e;
+    }
+
+    const errors: ImportRowError[] = [...parsed.errors];
+    const valid: { row: number; question: CreateQuestionDto }[] = [];
+    for (const candidate of parsed.candidates) {
+      const result = await validateQuestionPlain(candidate.question);
+      if (result.ok === false) {
+        errors.push({
+          row: candidate.row,
+          message: result.errors.join(" ; "),
+        });
+      } else {
+        valid.push({ row: candidate.row, question: result.question });
+      }
+    }
+    errors.sort((a, b) => a.row - b.row);
+
+    let imported = 0;
+    if (!dryRun && valid.length > 0) {
+      const inserted = await this.insertQuestions(
+        quizId,
+        valid.map((v) => v.question),
+      );
+      imported = inserted?.length ?? valid.length;
+    }
+
+    return {
+      format,
+      dry_run: dryRun,
+      total_rows: parsed.candidates.length + parsed.errors.length,
+      valid: valid.length,
+      imported,
+      questions: valid.map((v) => ({ row: v.row, ...v.question })),
+      errors,
+    };
+  }
+
+  /** Lit et met en forme le fichier selon le format annoncé. */
+  private async parseImportFile(
+    format: ImportFormat,
+    body: ImportQuestionsDto | undefined,
+    file?: UploadedImportFile,
+  ): Promise<ParsedImport> {
+    if (file) {
+      if (!Buffer.isBuffer(file.buffer) || file.buffer.length === 0) {
+        throw new ImportFileError("Fichier vide");
+      }
+      if (file.buffer.length > IMPORT_MAX_FILE_BYTES) {
+        throw new ImportFileError(
+          "Fichier trop volumineux (2 Mo au plus)",
+          "too_large",
+        );
+      }
+      const ext = /\.([A-Za-z0-9]+)$/.exec(file.originalname ?? "")?.[1];
+      if (ext && !IMPORT_EXTENSIONS[format].includes(ext.toLowerCase())) {
+        throw new ImportFileError(
+          `Extension .${ext} incompatible avec le format ${format} (attendu : ${IMPORT_EXTENSIONS[
+            format
+          ]
+            .map((e) => `.${e}`)
+            .join(", ")})`,
+          "unsupported_type",
+        );
+      }
+    }
+
+    if (format === "markdown") {
+      let content: string;
+      if (file) {
+        content = decodeTextFile(file.buffer, "fichier Markdown");
+      } else if (typeof body?.questions_content === "string") {
+        if (Buffer.byteLength(body.questions_content) > IMPORT_MAX_FILE_BYTES) {
+          throw new ImportFileError(
+            "Contenu trop volumineux (2 Mo au plus)",
+            "too_large",
+          );
+        }
+        content = body.questions_content;
+      } else {
+        throw new ImportFileError(
+          "Fichier (champ file) ou questions_content requis",
+        );
+      }
+      let questions: CreateQuestionDto[];
+      try {
+        questions = this.parseMarkdownQuestions(
+          content,
+          body?.answers_content,
+        );
+      } catch (e) {
+        if (e instanceof BadRequestException) {
+          throw new ImportFileError(e.message);
+        }
+        throw e;
+      }
+      if (questions.length === 0) {
+        throw new ImportFileError("Aucune question trouvée dans le fichier");
+      }
+      if (questions.length > IMPORT_MAX_ROWS) {
+        throw new ImportFileError(
+          `Trop de questions : ${IMPORT_MAX_ROWS} au plus`,
+        );
+      }
+      return {
+        candidates: questions.map((q, i) => ({
+          row: i + 1,
+          question: { ...q } as unknown as Record<string, unknown>,
+        })),
+        errors: [],
+      };
+    }
+
+    if (!file) {
+      throw new ImportFileError('Fichier requis (champ multipart "file")');
+    }
+
+    if (format === "csv") {
+      const text = decodeTextFile(file.buffer, "CSV");
+      const rows = parseCsv(text, { maxRecords: IMPORT_MAX_ROWS + 1 });
+      return parseTabularRows(rows);
+    }
+    if (format === "xlsx") {
+      const rows = await readXlsxRows(file.buffer, {
+        maxRows: IMPORT_MAX_ROWS + 1,
+      });
+      return parseTabularRows(rows);
+    }
+    // kahoot : lignes de titre au-dessus de l'en-tête, bornées à part
+    const rows = await readXlsxRows(file.buffer, {
+      maxRows: IMPORT_MAX_ROWS + 31,
+    });
+    return parseKahootRows(rows, IMPORT_MAX_ROWS);
   }
 
   // ============================================================
