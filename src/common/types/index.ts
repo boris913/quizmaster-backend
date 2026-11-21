@@ -39,6 +39,10 @@ export interface Quiz {
   global_timer_seconds: number;
   use_global_timer: boolean;
   total_questions: number;
+  /** Jeton de partage public (migration 007, issue #12), null si non partagé. */
+  share_token?: string | null;
+  /** Quiz d'origine d'une copie (migration 007), null sinon. */
+  source_quiz_id?: string | null;
   created_at: string;
   updated_at: string;
 }
