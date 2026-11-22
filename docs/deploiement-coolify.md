@@ -133,7 +133,7 @@ backend et les navigateurs en ont besoin.
    sur : méthode `GET`, chemin `/api/health`, port `3001`, code attendu `200`.
 6. Renseigner les variables (§ 6), puis **Deploy**.
 
-Ce que fait l'image (voir `Dockerfile`) : build multi-étapes Node 20 alpine,
+Ce que fait l'image (voir `Dockerfile`) : build multi-étapes Node 22 alpine (Node 22 minimum : `@supabase/supabase-js` exige un WebSocket natif),
 seules les dépendances de production dans l'image finale, exécution par
 l'utilisateur non-root `node`, écoute sur `0.0.0.0:$PORT` (3001 par défaut).
 Le backend fait confiance à **un** proxy (`trust proxy = 1`) : l'IP client

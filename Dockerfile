@@ -1,9 +1,11 @@
 # syntax=docker/dockerfile:1
 # Image de production du backend Kwizora (issue #27) — déploiement Coolify.
-# Node 20 : même version majeure que la CI (.github/workflows/ci.yml).
+# Node 22 : même version majeure que la CI (.github/workflows/ci.yml).
+# Node 22 minimum : @supabase/supabase-js (realtime) exige un WebSocket natif
+# et plante au démarrage sous Node 20 ; Node 20 est de plus en fin de vie.
 
 # --- 1. Build : dépendances complètes + compilation TypeScript -------------
-FROM node:20-alpine AS build
+FROM node:22-alpine AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund
@@ -12,14 +14,14 @@ COPY src ./src
 RUN npm run build
 
 # --- 2. Dépendances de production uniquement -------------------------------
-FROM node:20-alpine AS prod-deps
+FROM node:22-alpine AS prod-deps
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund \
   && npm cache clean --force
 
 # --- 3. Image finale ---------------------------------------------------------
-FROM node:20-alpine AS runtime
+FROM node:22-alpine AS runtime
 ENV NODE_ENV=production \
     PORT=3001
 WORKDIR /app
@@ -31,7 +33,7 @@ COPY package.json ./
 USER node
 # HTTP et WebSocket (Socket.io) sur le même port
 EXPOSE 3001
-# Sonde légère, sans Supabase (src/health). fetch est natif dans Node 20.
+# Sonde légère, sans Supabase (src/health). fetch est natif dans Node 22.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3001)+'/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 CMD ["node", "dist/main.js"]

@@ -79,7 +79,7 @@ les appels sont consultables via `supabase.queriesFor(table)`. Exemple complet :
 ### Intégration continue
 
 `.github/workflows/ci.yml` s'exécute sur chaque pull request et sur chaque push sur `main`
-(Node 20) : `npm ci`, `npm run lint:check`, `npm test`, `npm run build`. Une PR n'est
+(Node 22) : `npm ci`, `npm run lint:check`, `npm test`, `npm run build`. Une PR n'est
 mergeable que si ces étapes passent.
 
 ---
@@ -589,7 +589,7 @@ confirmer sur un vrai export** (voir `src/quiz/importers/kahoot.importer.ts`).
 ### Coolify (VPS, Docker)
 
 Le backend est déployé sur un VPS géré par Coolify, à partir du `Dockerfile`
-du dépôt (Node 20, utilisateur non-root, sonde `GET /api/health`). Supabase est
+du dépôt (Node 22, utilisateur non-root, sonde `GET /api/health`). Supabase est
 auto-hébergé sur le même serveur. Procédure complète (service Supabase,
 variables d'environnement, initialisation de la base, vérifications) :
 [docs/deploiement-coolify.md](docs/deploiement-coolify.md).
