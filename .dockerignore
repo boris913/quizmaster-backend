@@ -1,0 +1,30 @@
+# Secrets et configuration locale
+.env
+.env.*
+**/.env
+**/.env.*
+
+# Dépendances et artefacts (reconstruits dans l'image)
+node_modules
+**/node_modules
+dist
+build
+coverage
+*.log
+
+# Tests
+test
+**/*.spec.ts
+src/test-utils
+migrations/tests
+
+# Dépôt, CI, éditeurs, documentation
+.git
+.gitignore
+.github
+.vscode
+.idea
+docs
+*.md
+Dockerfile
+.dockerignore

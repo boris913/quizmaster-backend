@@ -18,7 +18,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - name: Installer les dépendances
@@ -32,3 +32,48 @@ jobs:
 
       - name: Build
         run: npm run build
+
+  docker:
+    name: Image Docker (build + healthcheck)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Construction locale uniquement : rien n'est poussé vers un registre.
+      - name: Construire l'image
+        run: docker build -t kwizora-backend:ci .
+
+      - name: Démarrer le conteneur (variables factices)
+        run: |
+          docker run -d --name kwizora-ci -p 3001:3001 \
+            -e SUPABASE_URL=http://supabase.invalid \
+            -e SUPABASE_SERVICE_ROLE_KEY=dummy-service-role-key \
+            -e JWT_SECRET=dummy-jwt-secret \
+            -e CORS_ORIGINS=https://kwizora.example \
+            kwizora-backend:ci
+
+      - name: Vérifier GET /api/health et le HEALTHCHECK Docker
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:3001/api/health; then break; fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:3001/api/health | grep -q '"status":"ok"'
+          # Le transport Socket.io répond sur le même port
+          curl -fsS "http://127.0.0.1:3001/socket.io/?EIO=4&transport=polling" | grep -q '"sid"'
+          # Premier contrôle après --interval (30 s) : on attend jusqu'à 2 min
+          for i in $(seq 1 60); do
+            status=$(docker inspect -f '{{.State.Health.Status}}' kwizora-ci)
+            echo "health: $status"
+            [ "$status" = "healthy" ] && exit 0
+            [ "$status" = "unhealthy" ] && exit 1
+            sleep 2
+          done
+          exit 1
+
+      - name: Journaux du conteneur
+        if: always()
+        run: docker logs kwizora-ci || true
+
+      - name: Vérifier l'utilisateur non-root
+        run: test "$(docker exec kwizora-ci id -u)" != "0"

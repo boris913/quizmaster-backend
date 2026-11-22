@@ -9,9 +9,9 @@
 
 | Composant | Fournisseur | Région / pays | Statut |
 |---|---|---|---|
-| Base de données (PostgreSQL) | Supabase | **TODO (mainteneur) : à confirmer** | non vérifié |
-| Sauvegardes de la base | Supabase | **TODO (mainteneur) : à confirmer** (en principe même région que le projet, à vérifier selon l'offre) | non vérifié |
-| Backend NestJS + Socket.io | **TODO (mainteneur)** (le README cite Railway / Render comme exemples, sans confirmer le choix réel) | **TODO (mainteneur) : à confirmer** | non vérifié |
+| Base de données (PostgreSQL) | Supabase auto-hébergé sur le VPS Coolify (même serveur que le backend) | **TODO (mainteneur) : pays du datacenter du VPS** | non vérifié |
+| Sauvegardes de la base | **TODO (mainteneur)** : sauvegardes Coolify et/ou stockage externe (voir [deploiement-coolify.md](deploiement-coolify.md)) | **TODO (mainteneur) : à confirmer** | non vérifié |
+| Backend NestJS + Socket.io | VPS géré par Coolify (conteneur Docker, voir [deploiement-coolify.md](deploiement-coolify.md)) ; **TODO (mainteneur)** : nom de l'hébergeur du VPS | **TODO (mainteneur) : à confirmer** | non vérifié |
 | Frontend Next.js | **TODO (mainteneur)** | **TODO (mainteneur) : à confirmer** | non vérifié |
 | Journaux applicatifs | hébergeur du backend | **TODO (mainteneur)** : région et durée de conservation | non vérifié |
 
