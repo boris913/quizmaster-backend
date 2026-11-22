@@ -12,13 +12,19 @@ import {
   UnsupportedMediaTypeException,
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import Anthropic from "@anthropic-ai/sdk";
+import {
+  ApiError,
+  BlockedReason,
+  FinishReason,
+  GenerateContentResponse,
+  GoogleGenAI,
+} from "@google/genai";
 import {
   AI_MAX_OUTPUT_TOKENS,
   AI_MAX_SOURCE_CHARS,
   AI_MIN_SOURCE_CHARS,
   AI_PDF_MAX_BYTES,
-  ANTHROPIC_CLIENT,
+  GEMINI_CLIENT,
   DEFAULT_AI_MODEL,
   DEFAULT_GENERATED_TYPES,
   GeneratableQuestionType,
@@ -72,14 +78,33 @@ export interface GenerateQuizResponse {
 }
 
 /**
- * Repli serveur si le modèle refuse pour raison de politique d'usage
- * (`fallbacks: "default"`). Sur un modèle sans repli, la requête s'exécute
- * normalement sur le modèle demandé.
+ * Fins de génération qui signifient un blocage par les filtres de sécurité
+ * (ou de politique d'usage) : la réponse n'est pas renvoyée.
  */
-const SERVER_SIDE_FALLBACK_BETA = "server-side-fallback-2026-07-01";
+const SAFETY_FINISH_REASONS: ReadonlySet<string> = new Set([
+  FinishReason.SAFETY,
+  FinishReason.PROHIBITED_CONTENT,
+  FinishReason.BLOCKLIST,
+  FinishReason.SPII,
+  FinishReason.IMAGE_SAFETY,
+  FinishReason.IMAGE_PROHIBITED_CONTENT,
+]);
 
-/** Le modèle a refusé la demande (`stop_reason: "refusal"`). */
+/**
+ * Le fournisseur a bloqué la demande ou la réponse (filtres de sécurité :
+ * `promptFeedback.blockReason` ou `finishReason` de sécurité).
+ */
 export class AiRefusalError extends Error {}
+
+/** Message d'erreur de l'API indiquant une clé invalide (400 API_KEY_INVALID). */
+const INVALID_KEY_PATTERN =
+  /API_KEY_INVALID|API key not valid|API key expired/i;
+
+/** Délai d'attente dépassé : abandon de la requête par le SDK (AbortSignal). */
+function isTimeoutError(error: unknown): boolean {
+  const name = (error as { name?: unknown })?.name;
+  return name === "AbortError" || name === "TimeoutError";
+}
 
 /** Normalise les blancs (texte de PDF : césures de lignes, espaces multiples). */
 export function normalizeSourceText(text: string): string {
@@ -103,8 +128,8 @@ export class AiService {
 
   constructor(
     @Optional()
-    @Inject(ANTHROPIC_CLIENT)
-    private readonly client: Anthropic | null,
+    @Inject(GEMINI_CLIENT)
+    private readonly client: GoogleGenAI | null,
     private readonly quota: AiQuotaService,
     private readonly pdf: PdfTextExtractor,
     private readonly config: ConfigService,
@@ -125,7 +150,7 @@ export class AiService {
   ): Promise<GenerateQuizResponse> {
     if (!this.client) {
       throw new ServiceUnavailableException(
-        "La génération par IA n'est pas configurée sur ce serveur (ANTHROPIC_API_KEY absente).",
+        "La génération par IA n'est pas configurée sur ce serveur (GEMINI_API_KEY absente).",
       );
     }
 
@@ -237,33 +262,51 @@ export class AiService {
     count: number,
     types: GeneratableQuestionType[],
   ): Promise<string> {
-    const response = await this.client!.beta.messages.create({
+    const response = await this.client!.models.generateContent({
       model: this.model,
-      max_tokens: AI_MAX_OUTPUT_TOKENS,
-      system: SYSTEM_PROMPT,
-      messages: [
-        {
-          role: "user",
-          content: buildUserPrompt({ source, level, count, types }),
-        },
-      ],
-      output_config: {
-        format: { type: "json_schema", schema: buildOutputSchema(types) },
+      contents: buildUserPrompt({ source, level, count, types }),
+      config: {
+        systemInstruction: SYSTEM_PROMPT,
+        maxOutputTokens: AI_MAX_OUTPUT_TOKENS,
+        responseMimeType: "application/json",
+        // responseJsonSchema seul (jamais avec responseSchema).
+        responseJsonSchema: buildOutputSchema(types),
       },
-      betas: [SERVER_SIDE_FALLBACK_BETA],
-      fallbacks: "default",
     });
+    return this.extractText(response);
+  }
 
-    if (response.stop_reason === "refusal") {
-      throw new AiRefusalError();
+  /**
+   * Texte JSON de la réponse : parties texte du premier candidat, hors
+   * réflexion du modèle. Lève AiRefusalError si la demande ou la réponse a
+   * été bloquée par les filtres de sécurité.
+   */
+  private extractText(response: GenerateContentResponse): string {
+    const blockReason = response.promptFeedback?.blockReason;
+    if (
+      blockReason &&
+      blockReason !== BlockedReason.BLOCKED_REASON_UNSPECIFIED
+    ) {
+      this.logger.warn(
+        `Demande IA bloquée par le fournisseur (${blockReason})`,
+      );
+      throw new AiRefusalError(String(blockReason));
     }
-    const text = response.content
-      .map((block) => (block.type === "text" ? block.text : ""))
+    const candidate = response.candidates?.[0];
+    const finishReason = candidate?.finishReason;
+    if (finishReason && SAFETY_FINISH_REASONS.has(finishReason)) {
+      this.logger.warn(
+        `Réponse IA bloquée par le fournisseur (${finishReason})`,
+      );
+      throw new AiRefusalError(String(finishReason));
+    }
+    if (finishReason === FinishReason.MAX_TOKENS) {
+      this.logger.warn("Sortie IA tronquée (maxOutputTokens atteint)");
+    }
+    return (candidate?.content?.parts ?? [])
+      .filter((part) => !part.thought && typeof part.text === "string")
+      .map((part) => part.text)
       .join("");
-    if (response.stop_reason === "max_tokens") {
-      this.logger.warn("Sortie IA tronquée (max_tokens atteint)");
-    }
-    return text;
   }
 
   /** Traduit une erreur de génération en réponse HTTP propre. */
@@ -280,46 +323,69 @@ export class AiService {
         "L'IA a refusé de traiter ce document. Vérifiez son contenu (aucun quota consommé).",
       );
     }
-    if (error instanceof Anthropic.APIConnectionTimeoutError) {
+    if (
+      isTimeoutError(error) ||
+      (error instanceof ApiError && error.status === 504)
+    ) {
       this.logger.warn("Délai d'attente dépassé lors de l'appel IA");
       return new GatewayTimeoutException(
         "L'IA n'a pas répondu à temps. Réessayez avec un document plus court ou moins de questions (aucun quota consommé).",
       );
     }
-    if (
-      error instanceof Anthropic.AuthenticationError ||
-      error instanceof Anthropic.PermissionDeniedError
-    ) {
-      this.logger.error(
-        `Appel IA refusé par le fournisseur (statut ${error.status}) : vérifier ANTHROPIC_API_KEY`,
-      );
-      return new ServiceUnavailableException(
-        "La génération par IA est mal configurée sur ce serveur.",
-      );
+    if (error instanceof ApiError) {
+      return this.providerErrorToHttp(error);
     }
-    if (
-      error instanceof Anthropic.RateLimitError ||
-      error instanceof Anthropic.InternalServerError ||
-      error instanceof Anthropic.APIConnectionError
-    ) {
-      this.logger.warn(
-        `Fournisseur IA indisponible : ${(error as Error).constructor.name}`,
-      );
+    if (error instanceof TypeError) {
+      // fetch : coupure réseau, DNS, etc.
+      this.logger.warn(`Fournisseur IA injoignable : ${error.message}`);
       return new ServiceUnavailableException(
         "Le service d'IA est momentanément indisponible. Réessayez dans quelques minutes (aucun quota consommé).",
-      );
-    }
-    if (error instanceof Anthropic.APIError) {
-      this.logger.error(
-        `Erreur du fournisseur IA (statut ${error.status}) : ${error.message}`,
-      );
-      return new BadGatewayException(
-        "La génération par IA a échoué. Réessayez (aucun quota consommé).",
       );
     }
     this.logger.error(
       `Erreur inattendue lors de la génération IA : ${(error as Error)?.message}`,
     );
+    return new BadGatewayException(
+      "La génération par IA a échoué. Réessayez (aucun quota consommé).",
+    );
+  }
+
+  /**
+   * Erreur HTTP renvoyée par l'API Gemini. Seul le statut est journalisé (le
+   * message de l'API ne contient pas la clé, mais on reste prudent).
+   */
+  private providerErrorToHttp(error: ApiError): HttpException {
+    const status = error.status;
+    const message = error.message ?? "";
+    if (status === 429) {
+      // Limite de débit du fournisseur (RESOURCE_EXHAUSTED), distincte du
+      // quota utilisateur (notre 429).
+      this.logger.warn("Limite de débit du fournisseur IA atteinte (429)");
+      return new ServiceUnavailableException(
+        "Le service d'IA est momentanément saturé, réessayez dans quelques minutes (aucun quota consommé).",
+      );
+    }
+    if (
+      status === 401 ||
+      status === 403 ||
+      (status === 400 &&
+        (INVALID_KEY_PATTERN.test(message) ||
+          message.includes("FAILED_PRECONDITION")))
+    ) {
+      this.logger.error(
+        `Appel IA refusé par le fournisseur (statut ${status}) : vérifier GEMINI_API_KEY et le projet Google`,
+      );
+      return new ServiceUnavailableException(
+        "La génération par IA est mal configurée sur ce serveur.",
+      );
+    }
+    if (status >= 500) {
+      this.logger.warn(`Fournisseur IA indisponible (statut ${status})`);
+      return new ServiceUnavailableException(
+        "Le service d'IA est momentanément indisponible. Réessayez dans quelques minutes (aucun quota consommé).",
+      );
+    }
+    this.logger.error(`Erreur du fournisseur IA (statut ${status})`);
     return new BadGatewayException(
       "La génération par IA a échoué. Réessayez (aucun quota consommé).",
     );

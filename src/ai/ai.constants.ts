@@ -6,11 +6,15 @@ import type { QuestionType } from "../common/utils/question-types.util";
  * de quiz par IA ») et dans la PR.
  */
 
-/** Jeton d'injection du client Anthropic (null si ANTHROPIC_API_KEY absente). */
-export const ANTHROPIC_CLIENT = "ANTHROPIC_CLIENT";
+/** Jeton d'injection du client Gemini (null si GEMINI_API_KEY absente). */
+export const GEMINI_CLIENT = "GEMINI_CLIENT";
 
-/** Modèle par défaut si AI_MODEL n'est pas défini. */
-export const DEFAULT_AI_MODEL = "claude-sonnet-5-5";
+/**
+ * Modèle par défaut si AI_MODEL n'est pas défini : Gemini 3.8 Flash, modèle
+ * Flash stable, « Free of charge » dans le free tier de l'API Gemini
+ * (https://aistudio.google.com/docs/models et /docs/pricing, 2026-11-22).
+ */
+export const DEFAULT_AI_MODEL = "gemini-3.8-flash";
 
 /** Générations autorisées par utilisateur et par mois civil (UTC). */
 export const DEFAULT_AI_MONTHLY_QUOTA = 3;
@@ -18,11 +22,12 @@ export const DEFAULT_AI_MONTHLY_QUOTA = 3;
 /** Délai d'attente d'un appel au fournisseur IA (ms), côté SDK. */
 export const DEFAULT_AI_TIMEOUT_MS = 120_000;
 
-/** Nouvelles tentatives du SDK (429, 5xx, coupure réseau). */
-export const AI_MAX_RETRIES = 1;
-
-/** Plafond de jetons de sortie (30 questions + réflexion du modèle). */
-export const AI_MAX_OUTPUT_TOKENS = 16_000;
+/**
+ * Plafond de jetons de sortie (`maxOutputTokens`). Chez Gemini, il inclut les
+ * jetons de réflexion du modèle : 30 questions ≈ 10 000 jetons, plus la
+ * réflexion.
+ */
+export const AI_MAX_OUTPUT_TOKENS = 32_768;
 
 /** Taille maximale du PDF envoyé : 10 Mo. */
 export const AI_PDF_MAX_BYTES = 10 * 1024 * 1024;
