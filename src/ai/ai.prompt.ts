@@ -7,8 +7,8 @@ import {
 import { GeneratableQuestionType } from "./ai.constants";
 
 /**
- * Prompt système, figé (aucune donnée variable : il reste cacheable et ne
- * dépend pas de la requête).
+ * Prompt système (`systemInstruction`), figé : aucune donnée variable, il ne
+ * dépend pas de la requête.
  */
 export const SYSTEM_PROMPT = `Tu es un assistant pédagogique qui rédige des questions de quiz en français pour des enseignants.
 
@@ -46,9 +46,9 @@ Rédige exactement ${params.count} questions (moins si le document ne le permet 
 }
 
 /**
- * Schéma JSON de la sortie structurée (`output_config.format`), calqué sur
- * `CreateQuestionDto`. Les contraintes non prises en charge par les sorties
- * structurées (longueurs, nombre d'éléments) sont vérifiées ensuite par
+ * Schéma JSON de la sortie structurée (`responseJsonSchema` de Gemini), calqué
+ * sur `CreateQuestionDto`. Les contraintes non appliquées par les sorties
+ * structurées (longueurs, etc.) sont vérifiées ensuite par
  * class-validator, avec le DTO de `POST /api/quizzes/:id/questions`.
  */
 export function buildOutputSchema(types: GeneratableQuestionType[]) {
