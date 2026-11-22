@@ -586,15 +586,15 @@ confirmer sur un vrai export** (voir `src/quiz/importers/kahoot.importer.ts`).
 
 ## Déploiement
 
-### Railway / Render
+### Coolify (VPS, Docker)
 
-1. Push du repo sur GitHub
-2. Connecter Railway/Render au repo
-3. Variables d'environnement :
-   - `SUPABASE_URL`
-   - `SUPABASE_SERVICE_ROLE_KEY`
-   - `JWT_SECRET`
-   - `CORS_ORIGINS` (origine(s) du frontend, séparées par des virgules)
-   - `PORT=3001`
-4. Build command : `npm run build`
-5. Start command : `npm run start:prod`
+Le backend est déployé sur un VPS géré par Coolify, à partir du `Dockerfile`
+du dépôt (Node 20, utilisateur non-root, sonde `GET /api/health`). Supabase est
+auto-hébergé sur le même serveur. Procédure complète (service Supabase,
+variables d'environnement, initialisation de la base, vérifications) :
+[docs/deploiement-coolify.md](docs/deploiement-coolify.md).
+
+```bash
+docker build -t kwizora-backend .
+docker run --env-file .env -p 3001:3001 kwizora-backend
+```

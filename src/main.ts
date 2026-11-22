@@ -1,17 +1,16 @@
 import { NestFactory } from "@nestjs/core";
-import { Logger, ValidationPipe } from "@nestjs/common";
+import { Logger } from "@nestjs/common";
+import type { NestExpressApplication } from "@nestjs/platform-express";
 import { AppModule } from "./app.module";
-import { GLOBAL_VALIDATION_OPTIONS } from "./common/validation";
+import { configureApp } from "./app.setup";
 import {
-  corsOriginCallback,
   getAllowedOrigins,
   isUsingDefaultOrigins,
 } from "./common/utils/cors.util";
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create<NestExpressApplication>(AppModule);
 
-  // CORS : origines autorisées via CORS_ORIGINS (voir common/utils/cors.util.ts)
   const logger = new Logger("Bootstrap");
   if (isUsingDefaultOrigins()) {
     const msg =
@@ -21,22 +20,12 @@ async function bootstrap() {
   } else {
     logger.log(`CORS autorisé pour : ${getAllowedOrigins().join(", ")}`);
   }
-  app.enableCors({
-    origin: corsOriginCallback,
-    credentials: true,
-    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    // X-Resume-Token : jeton de reprise des devoirs (issue #10)
-    allowedHeaders: ["Content-Type", "Authorization", "X-Resume-Token"],
-  });
 
-  // Validation globale des DTOs
-  app.useGlobalPipes(new ValidationPipe(GLOBAL_VALIDATION_OPTIONS));
+  configureApp(app);
 
-  // Prefix global API
-  app.setGlobalPrefix("api");
-
-  const port = process.env.PORT || 3001;
-  await app.listen(port);
+  // 0.0.0.0 : joignable depuis le proxy dans un conteneur Docker
+  const port = Number(process.env.PORT) || 3001;
+  await app.listen(port, "0.0.0.0");
   console.log(`🚀 Kwizora Backend running on: http://localhost:${port}`);
   console.log(`🔌 WebSocket ready on: ws://localhost:${port}`);
 }
