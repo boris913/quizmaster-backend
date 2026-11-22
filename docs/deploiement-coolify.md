@@ -274,10 +274,9 @@ tels.
 
 Notes :
 
-- Les variables `GEMINI_API_KEY` et `AI_*` correspondent au passage du
-  fournisseur d'IA à Gemini (branche `feat/26-gemini`). Tant que ce
-  changement n'est pas sur `main`, se référer à `.env.example` pour le nom de
-  la clé lue par le code.
+- `GEMINI_API_KEY` : en production pour des utilisateurs de l'EEE, les
+  conditions de l'API Gemini imposent un projet Google avec facturation
+  activée (pas le free tier). Voir `docs/registre-traitement.md`.
 - `SUPABASE_ANON_KEY` figure dans `.env.example` mais n'est lue nulle part par
   le backend : inutile en production.
 - Aucun fichier `.env` n'est copié dans l'image (`.dockerignore`) : tout passe
