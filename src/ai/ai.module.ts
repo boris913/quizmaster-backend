@@ -4,7 +4,7 @@ import { AiController } from "./ai.controller";
 import { AiService } from "./ai.service";
 import { AiQuotaService } from "./ai-quota.service";
 import { PdfTextExtractor } from "./pdf-text";
-import { anthropicClientProvider } from "./anthropic-client.provider";
+import { geminiClientProvider } from "./gemini-client.provider";
 
 /** Génération de quiz par IA depuis un texte ou un PDF de cours (issue #11). */
 @Module({
@@ -14,7 +14,7 @@ import { anthropicClientProvider } from "./anthropic-client.provider";
     AiService,
     AiQuotaService,
     PdfTextExtractor,
-    anthropicClientProvider,
+    geminiClientProvider,
   ],
 })
 export class AiModule {}

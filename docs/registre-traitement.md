@@ -6,7 +6,8 @@
 > communication présentant Kwizora comme « conforme RGPD ». Les éléments
 > marqués **TODO** sont à compléter par le mainteneur.
 
-Dernière mise à jour technique : 2026-11-20 (migration `008_ai_generations.sql`,
+Dernière mise à jour technique : 2026-11-22 (fournisseur d'IA : Google Gemini
+au lieu d'Anthropic, issue #26 ; migration `008_ai_generations.sql`,
 génération de quiz par IA, issue #11).
 
 ## 1. Responsable du traitement et contacts
@@ -82,8 +83,8 @@ Code d'accès à la session, statut, dates de début / fin, date d'anonymisation
 
 ### 4.5 Génération de quiz par IA (table `ai_generations`, issue #11)
 
-`POST /api/quizzes/generate` envoie au fournisseur d'IA (Anthropic, API
-Claude) **uniquement le contenu pédagogique fourni par l'enseignant** : le
+`POST /api/quizzes/generate` envoie au fournisseur d'IA (Google, API
+Gemini, issue #26) **uniquement le contenu pédagogique fourni par l'enseignant** : le
 texte collé ou le texte extrait côté serveur de son PDF de cours (60 000
 caractères au plus), le niveau de classe, le nombre et les types de questions
 souhaités. Le PDF lui-même n'est pas transmis.
@@ -97,6 +98,21 @@ souhaités. Le PDF lui-même n'est pas transmis.
   génération : `user_id`, date, nombre de questions (table `ai_generations`).
   Ni le cours ni les questions générées ne sont stockés : le brouillon est
   renvoyé à l'enseignant, qui l'enregistre lui-même via le CRUD habituel.
+- **TODO RGPD (mainteneur/DPO) — free tier Gemini.** Pour démarrer, la clé
+  utilisée est celle du free tier (« Unpaid Services »). Les conditions de
+  l'API Gemini indiquent que, sur les services non payants, Google utilise les
+  contenus envoyés et les réponses générées pour fournir, améliorer et
+  développer ses produits, que des **relecteurs humains** peuvent lire et
+  annoter ces entrées et sorties (après dissociation du compte et de la clé),
+  et demandent de ne pas y soumettre d'informations sensibles, confidentielles
+  ou personnelles. Les mêmes conditions réservent aux **services payants**
+  la mise à disposition d'applications aux utilisateurs de l'Espace
+  économique européen, de la Suisse et du Royaume-Uni. Le free tier est donc
+  réservé aux essais avec des contenus fictifs ou publics ; **à réexaminer
+  avant toute utilisation avec de vrais enseignants et élèves**, en passant
+  au palier payant (facturation activée, données non utilisées pour
+  l'amélioration des produits). Source : conditions de l'API Gemini,
+  https://aistudio.google.com/docs/terms (consultées le 2026-11-22).
 
 ### 4.6 Journaux techniques
 
@@ -116,7 +132,7 @@ l'hébergeur (voir [hebergement.md](hebergement.md)).
 | Quiz et questions | jusqu'à suppression par l'enseignant | `DELETE /api/quizzes/:id` (cascade sur questions et sessions) |
 | Compte enseignant | **TODO (mainteneur)** : durée d'inactivité avant suppression, procédure de suppression de compte (pas d'endpoint à ce jour) | — |
 | Quota de génération IA (`ai_generations` : utilisateur, date, nombre de questions) | jusqu'à suppression du compte enseignant (cascade) | **TODO (mainteneur)** : purge possible des lignes de plus de 12 mois |
-| Contenu envoyé au fournisseur d'IA | non conservé par Kwizora ; conservation chez le fournisseur selon ses conditions | **TODO (mainteneur)** : vérifier la durée de conservation de l'API Anthropic et l'option de non-conservation (ZDR) |
+| Contenu envoyé au fournisseur d'IA | non conservé par Kwizora ; conservation chez le fournisseur selon ses conditions | **TODO (mainteneur)** : vérifier la durée de conservation de l'API Gemini (free tier : contenus utilisables par Google pour améliorer ses produits ; palier payant : journalisation limitée, voir https://aistudio.google.com/docs/logs-policy) |
 | Journaux techniques | **TODO (mainteneur)** : selon l'hébergeur | — |
 | Sauvegardes de la base | **TODO (mainteneur)** : durée de rétention des sauvegardes Supabase selon l'offre | — |
 
@@ -143,7 +159,7 @@ Remarques :
 | Supabase | base de données PostgreSQL | **TODO (mainteneur)** : région du projet Supabase | **TODO** : DPA Supabase, mécanisme de transfert si hors UE |
 | Hébergeur du backend (NestJS) | exécution de l'API et du temps réel | **TODO (mainteneur)** | **TODO** |
 | Hébergeur du frontend (Next.js) | diffusion de l'interface | **TODO (mainteneur)** | **TODO** |
-| Anthropic (API Claude) | génération de brouillons de quiz à partir du cours fourni par l'enseignant (`POST /api/quizzes/generate`). **Aucune donnée élève.** | États-Unis | **TODO (mainteneur/DPO)** : DPA Anthropic (conditions commerciales de l'API), mécanisme de transfert hors UE (clauses contractuelles types / Data Privacy Framework), durée de conservation des requêtes |
+| Google (API Gemini) | génération de brouillons de quiz à partir du cours fourni par l'enseignant (`POST /api/quizzes/generate`). **Aucune donnée élève.** | États-Unis (traitement mondial possible) | **TODO (mainteneur/DPO)** : free tier = contenus utilisables par Google pour améliorer ses produits, relecture humaine possible, services non payants exclus pour les utilisateurs de l'EEE (voir § 4.5) ; avant usage réel : palier payant, conditions de traitement des données (DPA Google Cloud), mécanisme de transfert hors UE (clauses contractuelles types / Data Privacy Framework), durée de conservation des requêtes |
 
 Détails et procédure de vérification : [hebergement.md](hebergement.md).
 
@@ -160,7 +176,7 @@ Détails et procédure de vérification : [hebergement.md](hebergement.md).
 - CORS restreint aux origines du frontend (`CORS_ORIGINS`), pour l'API HTTP et
   pour Socket.io.
 - Temps de réponse et score calculés côté serveur.
-- Clé du fournisseur d'IA (`ANTHROPIC_API_KEY`) uniquement côté serveur,
+- Clé du fournisseur d'IA (`GEMINI_API_KEY`) uniquement côté serveur,
   jamais renvoyée par l'API ni journalisée ; PDF contrôlés (type MIME,
   signature `%PDF`, 10 Mo au plus) avant extraction du texte.
 - **TODO (mainteneur)** : HTTPS imposé chez l'hébergeur, gestion des accès au

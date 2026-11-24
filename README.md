@@ -115,7 +115,7 @@ src/
 │   └── gateway.module.ts
 ├── ai/                            # Génération de quiz par IA (issue #11)
 │   ├── ai.controller.ts           # POST /api/quizzes/generate, GET …/generate/quota
-│   ├── ai.service.ts              # Extraction, appel Claude, validation, erreurs
+│   ├── ai.service.ts              # Extraction, appel Gemini, validation, erreurs
 │   ├── ai-quota.service.ts        # Quota mensuel (table ai_generations)
 │   ├── ai.prompt.ts               # Prompt système + schéma de sortie JSON
 │   ├── generated-questions.ts     # Validation par CreateQuestionDto
@@ -226,17 +226,29 @@ Requête `multipart/form-data` :
 - **Quota** : `AI_MONTHLY_QUOTA` générations par enseignant et par mois
   civil UTC (3 par défaut), table `ai_generations` (migration 008). Une
   génération qui échoue ne consomme pas de quota.
-- Seul le contenu pédagogique est envoyé à Anthropic (aucune donnée élève) :
+- Fournisseur : **API Google Gemini** (SDK officiel `@google/genai`,
+  `ai.models.generateContent`, sortie JSON via `responseMimeType` +
+  `responseJsonSchema`). Erreurs du fournisseur : limite de débit Google (429
+  `RESOURCE_EXHAUSTED`) → 503 « service momentanément saturé » (à ne pas
+  confondre avec le 429 du quota utilisateur) ; réponse bloquée par les
+  filtres de sécurité (`promptFeedback.blockReason`, `finishReason` `SAFETY`…)
+  → 422 ; clé invalide ou refusée → 503 ; délai dépassé → 504.
+- **Free tier** : limites de débit par projet Google (RPM, TPM, requêtes par
+  jour) visibles dans Google AI Studio, non garanties. Sur le free tier,
+  Google peut utiliser les contenus envoyés pour améliorer ses produits, avec
+  relecture humaine possible : à réexaminer avant le passage au palier payant
+  (voir le registre).
+- Seul le contenu pédagogique est envoyé à Google (aucune donnée élève) :
   voir [docs/registre-traitement.md](docs/registre-traitement.md).
 
 Variables d'environnement :
 
 | Variable | Défaut | Rôle |
 |----------|--------|------|
-| `ANTHROPIC_API_KEY` | — | Clé de l'API Claude, côté serveur uniquement. Absente : l'application démarre, l'endpoint répond 503. |
-| `AI_MODEL` | `claude-sonnet-5-5` | Modèle utilisé (`claude-haiku-5-5` pour réduire le coût) |
+| `GEMINI_API_KEY` | — | Clé de l'API Gemini (Google AI Studio), côté serveur uniquement, jamais journalisée. Absente : l'application démarre, l'endpoint répond 503. |
+| `AI_MODEL` | `gemini-3.8-flash` | Modèle utilisé (Flash stable gratuit dans le free tier ; `gemini-3.5-flash-lite` pour plus de marge) |
 | `AI_MONTHLY_QUOTA` | `3` | Générations par enseignant et par mois |
-| `AI_TIMEOUT_MS` | `120000` | Délai d'attente d'un appel (SDK, 1 nouvelle tentative au plus) |
+| `AI_TIMEOUT_MS` | `120000` | Délai d'attente d'un appel au fournisseur (aucune nouvelle tentative automatique) |
 
 ### Sessions
 
